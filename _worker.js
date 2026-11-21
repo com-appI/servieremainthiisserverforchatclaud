@@ -12,6 +12,10 @@ function getNvidiaApiKey(env) {
   const value = env?.NVIDIA_API_KEY ?? "";
   return typeof value === "string" ? value.trim() : "";
 }
+function getSerperApiKey(env) {
+  const value = env?.SERPER_API_KEY ?? env?.SERPER_KEY ?? env?.SERPER ?? "";
+  return typeof value === "string" ? value.trim() : "";
+}
 const CHATCLAUD_SYSTEM = `You are ChatClaud.
 
 ChatClaud is your product identity. When asked who you are, say you are ChatClaud.
@@ -125,14 +129,33 @@ const MAX_SEARCH_RESULTS = 6;
 const MAX_PAGE_BYTES = 180 * 1024;
 const MAX_PAGE_TEXT = 8500;
 
-function shouldSearchWeb(query) {
+function shouldSearchWeb(query, forceSearch = false) {
+  if (forceSearch) return true;
   const q = String(query || "").trim();
   if (!q) return false;
   if (/https?:\/\/|www\.[a-z0-9.-]+\.[a-z]{2,}/i.test(q)) return true;
-  const explicit = /\b(search the web|search online|look it up|browse the web|find sources|open this site|read this page|visit this website|check online)\b|найди в интернете|поищи в интернете|проверь в сети|найди источники|найди сайт|открой сайт|зайди на сайт|прочитай сайт|почитай сайт|посмотри в интернете|поищи онлайн/i;
-  const fresh = /\b(today|tonight|right now|currently|latest|recent|breaking|this week|this month|current price|price today|release date|new version|news)\b|сегодня|сейчас|на данный момент|последн(?:ие|юю|ий|его)|свеж(?:ие|ая|ий)|актуальн(?:ая|ые|ый|ую)|новост(?:и|ей)|курс валют|цена|стоимость|расписани[ея]|когда выйдет|вышел ли|обновлени[ея]|верси[яию]|кто сейчас|текущ(?:ий|ая|ие)/i;
+  const lower = q.toLowerCase();
+
+  // Do not waste a live-search call on ordinary greetings or short acknowledgements.
+  const smallTalk = /^(hi|hello|hey|yo|привет|здравств(?:уй|уйте)|как дела|how are you|who are you|ты кто|кто ты|спасибо|thanks|ок|okay|ok|пока|bye)\b/i;
+  if (smallTalk.test(q) && q.length < 64) return false;
+
+  // Clear Russian and English search commands, including short forms such as "поищи ...".
+  const explicit = /^(?:please\s+)?(?:search(?: for| online| the web)?|find(?: information)?|look up|google|browse|поищи(?:те)?|найди(?:те)?|загугли(?:те)?|проверь(?:те)?|посмотри(?:те)?|узнай(?:те)?)(?:\s|$)/i;
+  const explicitPhrase = /\b(search the web|search online|look it up|browse the web|find sources|find information|check online|поищи в интернете|найди в интернете|проверь в сети|найди источники|найди сайт|открой сайт|зайди на сайт|прочитай сайт|почитай сайт|посмотри в интернете|поищи онлайн|хочу узнать|найди информацию|поищи информацию)\b/i;
+  if (explicit.test(q) || explicitPhrase.test(q)) return true;
+
+  const fresh = /\b(today|tonight|right now|currently|latest|recent|breaking|this week|this month|current price|price today|release date|new version|news|updated)\b|сегодня|сейчас|на данный момент|последн(?:ие|юю|ий|его)|свеж(?:ие|ая|ий)|актуальн(?:ая|ые|ый|ую)|новост(?:и|ей)|курс валют|цена|стоимость|расписани[ея]|когда выйдет|вышел ли|обновлени[ея]|верси[яию]|кто сейчас|текущ(?:ий|ая|ие)/i;
   const lookup = /\b(weather|forecast|exchange rate|stock price|election results|sports score|opening hours|available now)\b|погод[аыуе]|прогноз|курс евро|курс доллара|результат(?:ы)? матч|сч[её]т матча|открыт[оаы]? сейчас|работает ли сейчас/i;
-  return explicit.test(q) || fresh.test(q) || lookup.test(q);
+  if (fresh.test(q) || lookup.test(q)) return true;
+
+  // Factual questions often need verification even without the word "today".
+  const factualQuestion = /\?|\b(what is|who is|where is|when did|how much|how many|why|кто такой|кто такая|что такое|где находится|когда|сколько|какой|какая|какие)\b/i;
+  if (factualQuestion.test(q) && q.length >= 14) return true;
+
+  // Year-specific questions are usually about changing or versioned information.
+  if (/\b20(?:2[3-9]|3[0-9])\b/.test(q)) return true;
+  return false;
 }
 
 function safePublicHttpsUrl(value) {
@@ -196,7 +219,7 @@ async function searchSerper(query, apiKey, signal) {
 }
 
 async function searchWebProviders(query, env, signal) {
-  const serperKey = typeof env?.SERPER_API_KEY === "string" ? env.SERPER_API_KEY.trim() : "";
+  const serperKey = getSerperApiKey(env);
   if (!serperKey) {
     return {
       results: [],
@@ -350,11 +373,12 @@ function withSystemIdentity(messages, webContext = "") {
   return cloned;
 }
 
-function withSearchFailureNotice(messages) {
-  return [...messages, { role: "user", content: "[Internal search status: the automatic live web search failed. Do not claim the search succeeded, do not invent current facts or URLs, and tell the user that live search is temporarily unavailable.]" }];
+function withSearchFailureNotice(messages, reason = "") {
+  const detail = String(reason || "No diagnostic detail available.").slice(0, 240);
+  return [...messages, { role: "user", content: "[Internal search status: the automatic live web search failed. Do not claim the search succeeded, do not invent current facts or URLs. Tell the user plainly that live search failed. Diagnostic: " + detail + "]" }];
 }
 
-function streamChat(request, messages, env) {
+function streamChat(request, messages, env, options = {}) {
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
   const aborter = new AbortController();
@@ -364,6 +388,7 @@ function streamChat(request, messages, env) {
   request.signal.addEventListener("abort", abortFromRequest, { once: true });
 
   const nvidiaApiKey = getNvidiaApiKey(env);
+  const forceSearch = Boolean(options.forceSearch);
 
   return new ReadableStream({
     async start(controller) {
@@ -381,8 +406,9 @@ function streamChat(request, messages, env) {
         let webContext = "";
         let webSources = [];
         let webSearchFailed = false;
+        let webSearchFailureReason = "";
         const userQuery = lastUserText(messages);
-        if (shouldSearchWeb(userQuery)) {
+        if (shouldSearchWeb(userQuery, forceSearch)) {
           send({ type: "status", stage: "searching", label: "Ищу в интернете (Serper)…" });
           try {
             const research = await researchWeb(userQuery, env, aborter.signal);
@@ -396,12 +422,14 @@ function streamChat(request, messages, env) {
               reason: d.ok ? null : (d.reason || "Поисковые провайдеры не ответили.") });
             if (!webSources.length) {
               webSearchFailed = true;
+              webSearchFailureReason = String(d.reason || "Serper returned no usable results.").slice(0, 240);
               send({ type: "status", stage: "search_failed", label: "Поиск временно недоступен — отвечу без актуальных данных." });
             } else if (!webContext) {
               send({ type: "status", stage: "pages_unavailable", label: "Результаты найдены, но страницы не удалось прочитать." });
             }
           } catch (error) {
             webSearchFailed = true;
+            webSearchFailureReason = String(error?.message || error).slice(0, 240);
             console.warn("Web research unavailable:", error?.message || error);
             send({ type: "search_diagnostics", ok: false, provider: "Serper", attempted: 0,
               failed: 0, fallbackUsed: false, results: 0, pagesAttempted: 0, pagesRead: 0,
@@ -411,7 +439,7 @@ function streamChat(request, messages, env) {
         }
         if (aborter.signal.aborted) return;
         send({ type: "status", stage: "answer", label: "Формулирую ответ…" });
-        const effectiveMessages = webSearchFailed ? withSearchFailureNotice(messages) : messages;
+        const effectiveMessages = webSearchFailed ? withSearchFailureNotice(messages, webSearchFailureReason) : messages;
 
         const upstream = await fetch(NVIDIA_URL, {
           method: "POST",
@@ -541,8 +569,9 @@ async function handleChat(request, env) {
 
   const messages = validateMessages(body.messages);
   if (!messages) return json({ type: "error", code: "invalid_messages", error: "Invalid message format." }, 400);
+  const forceSearch = body.forceSearch === true || body.search === true;
 
-  return new Response(streamChat(request, messages, env), {
+  return new Response(streamChat(request, messages, env, { forceSearch }), {
     headers: {
       "content-type": "text/event-stream; charset=utf-8",
       "cache-control": "no-cache, no-transform",
@@ -568,9 +597,10 @@ export default {
         model: MODEL,
         nvidiaConfigured: Boolean(getNvidiaApiKey(env)),
         firebaseConfigured: Boolean(getFirebaseProjectId(env)),
-        searchEnabled: Boolean(typeof env?.SERPER_API_KEY === "string" && env.SERPER_API_KEY.trim()),
+        searchEnabled: Boolean(getSerperApiKey(env)),
         tavilyConfigured: false,
-        serperConfigured: Boolean(typeof env?.SERPER_API_KEY === "string" && env.SERPER_API_KEY.trim())
+        serperConfigured: Boolean(getSerperApiKey(env)),
+        serperBindings: Object.keys(env || {}).filter((name) => /serper/i.test(name))
       });
     }
     if (url.pathname === "/api/chat" && request.method === "POST") return handleChat(request, env);

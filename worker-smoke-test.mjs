@@ -16,6 +16,7 @@ assert.equal(health.firebaseConfigured, true);
 assert.equal(health.searchEnabled, false);
 assert.equal(health.tavilyConfigured, false);
 assert.equal(health.serperConfigured, false);
+assert.deepEqual(health.serperBindings, []);
 
 response = await worker.fetch(new Request('https://ghost.example/api/chat', {
   method: 'POST', headers: { 'content-type': 'application/json' },
@@ -129,6 +130,26 @@ try {
   assert.match(lastNvidiaBody.messages.map((m) => m.content).join('\n'), /Verified page text from the website/);
   assert.doesNotMatch(lastNvidiaBody.messages.map((m) => m.content).join('\n'), /Navigation ignored|ignoreThisScript/);
 
+  // Russian search imperatives should trigger web search even without "в интернете".
+  upstreamMode = 'ok';
+  response = await worker.fetch(new Request('https://ghost.example/api/chat', {
+    method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify({ messages: [{ role: 'user', content: 'Поищи информацию про последние обновления ChatClaud' }] })
+  }), { ASSETS: assets, NVIDIA_API_KEY: 'test-only', SERPER_API_KEY: 'test-serper' });
+  assert.equal(response.status, 200);
+  const russianSearchStream = await response.text();
+  assert.match(russianSearchStream, /"type":"sources"/);
+  assert.match(lastNvidiaBody.messages.map((m) => m.content).join('\n'), /Verified page text from the website/);
+
+  // Explicit forceSearch allows the client to request search for any prompt.
+  response = await worker.fetch(new Request('https://ghost.example/api/chat', {
+    method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify({ messages: [{ role: 'user', content: 'Explain this concept briefly' }], forceSearch: true })
+  }), { ASSETS: assets, NVIDIA_API_KEY: 'test-only', SERPER_API_KEY: 'test-serper' });
+  assert.equal(response.status, 200);
+  const forcedSearchStream = await response.text();
+  assert.match(forcedSearchStream, /"type":"sources"/);
+
   // Serper is the only search provider and returns source cards.
   upstreamMode = 'ok';
   response = await worker.fetch(new Request('https://ghost.example/api/chat', {
@@ -153,6 +174,7 @@ try {
   assert.match(failedSearchStream, /"stage":"search_failed"/);
   assert.match(failedSearchStream, /"ok":false/);
   assert.match(lastNvidiaBody.messages.map((m) => m.content).join('\n'), /automatic live web search failed/i);
+  assert.match(lastNvidiaBody.messages.map((m) => m.content).join('\n'), /Serper returned HTTP 503/);
   upstreamMode = 'ok';
 
   // The app-level rate limit returns the agreed busy contract with a 150-second retry delay.
