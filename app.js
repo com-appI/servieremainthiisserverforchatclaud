@@ -303,6 +303,25 @@
     });
   }
 
+  function bindSourcesToggles(root) {
+    (root || document).querySelectorAll('.sources-toggle').forEach((btn) => {
+      if (btn.dataset.bound === '1') return;
+      btn.dataset.bound = '1';
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const wrap = btn.closest('.sources-wrap');
+        const panel = wrap && wrap.querySelector('.sources-panel');
+        if (!panel) return;
+        const open = panel.hasAttribute('hidden');
+        if (open) panel.removeAttribute('hidden');
+        else panel.setAttribute('hidden', '');
+        btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+        wrap.classList.toggle('open', open);
+      });
+    });
+  }
+
   function renderMessages() {
     els.feed.querySelectorAll('.msg, .agent-status').forEach((node) => node.remove());
     if (!state.messages.length) {
@@ -340,6 +359,7 @@
       els.feed.appendChild(wrap);
     });
     renderHistory();
+    bindSourcesToggles(els.feed);
     scrollBottom();
   }
 
@@ -546,6 +566,7 @@
         state.streamBody.innerHTML = formatMessage(assistant.content || '');
         if (assistant.sources?.length) {
           state.streamBody.insertAdjacentHTML('beforeend', renderSourcesHtml(assistant.sources));
+          bindSourcesToggles(state.streamBody);
         }
       }
     } else if (packet.type === 'error') {
@@ -557,18 +578,38 @@
     }
   }
 
-  function renderSourcesHtml(items) {
-    if (!items || !items.length) return '';
-    const cards = items.slice(0, 8).map((s) => {
-      const title = escapeHtml(s.title || s.domain || s.url || 'Source');
-      const domain = escapeHtml(s.domain || '');
-      const url = escapeHtml(s.url || '#');
-      return '<a class="source-card" href="' + url + '" target="_blank" rel="noopener noreferrer">' +
-        '<span class="source-title">' + title + '</span>' +
-        (domain ? '<span class="source-domain">' + domain + '</span>' : '') +
-        '</a>';
+  function renderSourcesHtml(sources) {
+    const items = (sources || []).filter((s) => s && s.url).slice(0, 8);
+    if (!items.length) return '';
+    const globe = '<svg class="sources-globe-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M2 12h20M12 2a15 15 0 0 1 0 20M12 2a15 15 0 0 0 0 20" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>';
+    const rows = items.map((s) => {
+      let domain = s.domain || '';
+      try { if (!domain) domain = new URL(s.url).hostname.replace(/^www\\./, ''); } catch {}
+      const title = escapeHtml(s.title || domain || s.url);
+      const safeUrl = escapeHtml(s.url);
+      const safeDomain = escapeHtml(domain);
+      const fav = domain
+        ? ('https://www.google.com/s2/favicons?domain=' + encodeURIComponent(domain) + '&sz=32')
+        : '';
+      const img = fav
+        ? ('<img class="source-fav" src="' + fav + '" alt="" width="16" height="16" loading="lazy" referrerpolicy="no-referrer"/>')
+        : '<span class="source-fav-fallback"></span>';
+      return (
+        '<a class="source-row" href="' + safeUrl + '" target="_blank" rel="noopener noreferrer">' +
+          img +
+          '<span class="source-meta"><span class="source-title">' + title + '</span>' +
+          '<span class="source-domain">' + safeDomain + '</span></span>' +
+        '</a>'
+      );
     }).join('');
-    return '<div class="sources-block"><div class="sources-label">Sources</div><div class="sources-list">' + cards + '</div></div>';
+    return (
+      '<div class="sources-wrap">' +
+        '<button type="button" class="sources-toggle" aria-expanded="false">' +
+          globe + '<span>Sources</span><span class="sources-count">' + items.length + '</span>' +
+        '</button>' +
+        '<div class="sources-panel" hidden>' + rows + '</div>' +
+      '</div>'
+    );
   }
 
   function renderSourcesLive(items) {
