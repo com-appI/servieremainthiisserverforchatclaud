@@ -39,6 +39,9 @@
     animations: localStorage.getItem('ghost-animations') !== 'false',
     language: localStorage.getItem('chatclaud-lang') || 'en'
   };
+  /** @type {{name:string,kind:string,content:any}[]} */
+  let pendingAttachments = [];
+
 
   const I18N = {
     en: {
@@ -113,6 +116,20 @@
     return String(value ?? '').replace(/[&<>"']/g, (char) => ({
       '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
     })[char]);
+  }
+
+  function safeExternalHttpsUrl(value) {
+    try {
+      const url = new URL(String(value || ''));
+      const host = url.hostname.toLowerCase().replace(/\.$/, '');
+      const ipLiteral = /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host) || host.startsWith('[') || host.includes(':');
+      const blockedSuffixes = ['.localhost', '.local', '.internal', '.test', '.example', '.invalid', '.onion', '.arpa'];
+      if (url.protocol !== 'https:' || url.username || url.password || (url.port && url.port !== '443')) return null;
+      if (!host || ipLiteral || !host.includes('.') || host === 'localhost' || blockedSuffixes.some((suffix) => host.endsWith(suffix))) return null;
+      url.hostname = host;
+      url.hash = '';
+      return url;
+    } catch { return null; }
   }
 
   function formatMessage(value) {
@@ -385,6 +402,26 @@
     });
   }
 
+  function buildUserContent(text, attachments) {
+    const parts = [];
+    const body = String(text || '').trim();
+    if (body) parts.push({ type: 'text', text: body });
+    for (const file of attachments || []) {
+      if (file.kind === 'image' && file.content) {
+        parts.push({ type: 'image_url', image_url: { url: file.content } });
+        parts.push({ type: 'text', text: 'User attached image: ' + file.name + '. Analyze the image.' });
+      } else if (file.content) {
+        parts.push({
+          type: 'text',
+          text: 'User attached file (' + file.kind + '): ' + file.name + '\n\n' + String(file.content).slice(0, 14000)
+        });
+      }
+    }
+    if (!parts.length) return body || '';
+    if (parts.length === 1 && parts[0].type === 'text') return parts[0].text;
+    return parts;
+  }
+
   function renderMessages() {
     els.feed.querySelectorAll('.msg, .agent-status').forEach((node) => node.remove());
     if (!state.messages.length) {
@@ -642,21 +679,18 @@
   }
 
   function renderSourcesHtml(sources) {
-    const items = (sources || []).filter((s) => s && s.url).slice(0, 8);
+    const items = (sources || []).filter((item) => item && safeExternalHttpsUrl(item.url)).slice(0, 8);
     if (!items.length) return '';
     const globe = '<svg class="sources-globe-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M2 12h20M12 2a15 15 0 0 1 0 20M12 2a15 15 0 0 0 0 20" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>';
-    const rows = items.map((s) => {
-      let domain = s.domain || '';
-      try { if (!domain) domain = new URL(s.url).hostname.replace(/^www\\./, ''); } catch {}
-      const title = escapeHtml(s.title || domain || s.url);
-      const safeUrl = escapeHtml(s.url);
+    const rows = items.map((item) => {
+      const parsedUrl = safeExternalHttpsUrl(item.url);
+      if (!parsedUrl) return '';
+      const domain = parsedUrl.hostname.replace(/^www\./, '');
+      const title = escapeHtml(item.title || domain || parsedUrl.href);
+      const safeUrl = escapeHtml(parsedUrl.href);
       const safeDomain = escapeHtml(domain);
-      const fav = domain
-        ? ('https://www.google.com/s2/favicons?domain=' + encodeURIComponent(domain) + '&sz=32')
-        : '';
-      const img = fav
-        ? ('<img class="source-fav" src="' + fav + '" alt="" width="16" height="16" loading="lazy" referrerpolicy="no-referrer"/>')
-        : '<span class="source-fav-fallback"></span>';
+      const fav = 'https://www.google.com/s2/favicons?domain=' + encodeURIComponent(domain) + '&sz=32';
+      const img = '<img class="source-fav" src="' + fav + '" alt="" width="16" height="16" loading="lazy" referrerpolicy="no-referrer"/>';
       return (
         '<a class="source-row" href="' + safeUrl + '" target="_blank" rel="noopener noreferrer">' +
           img +
@@ -665,6 +699,7 @@
         '</a>'
       );
     }).join('');
+    if (!rows) return '';
     return (
       '<div class="sources-wrap">' +
         '<button type="button" class="sources-toggle" aria-expanded="false">' +
@@ -682,7 +717,8 @@
 
   async function sendMessage(rawText) {
     const text = String(rawText || '').trim();
-    if (!text || state.loading) return;
+    if (state.loading) return;
+    if (!text && !pendingAttachments.length) return;
     tapHaptic();
     if (!state.user) { openAuth('login'); toast('Sign in to start a chat.'); return; }
     if (Date.now() < state.cooldownUntil) {
@@ -692,7 +728,11 @@
     if (voiceListening && voiceRecognition) { try { voiceRecognition.stop(); } catch {} }
     if (!state.activeChatId) state.activeChatId = crypto.randomUUID();
     state.createdAt = state.createdAt || new Date();
-    state.messages.push({ role: 'user', content: text });
+    const userContent = buildUserContent(text, pendingAttachments);
+    const displayText = text || pendingAttachments.map((a) => '📎 ' + a.name).join(', ');
+    state.messages.push({ role: 'user', content: typeof userContent === 'string' ? userContent : displayText, _apiContent: userContent, _attachments: pendingAttachments.slice() });
+    pendingAttachments = [];
+    renderAttachHint();
     state.messages = state.messages.slice(-24);
     if (state.messages[0]?.role === 'assistant') state.messages.shift();
     state.streamText = '';
@@ -710,12 +750,24 @@
 
     try {
       const token = await state.user.getIdToken();
-      const contextMessages = state.messages.slice(0, -1).slice(-23);
+      const contextMessages = state.messages.slice(0, -1).slice(-23).map((m) => ({
+        role: m.role,
+        content: m._apiContent != null ? m._apiContent : m.content
+      }));
+      const last = state.messages[state.messages.length - 1];
+      // last is empty assistant; include previous user with api content via slice above
+      // Rebuild: context should end with last user
+      const forApi = state.messages
+        .filter((m) => m.role === 'user' || (m.role === 'assistant' && m.content && !m.error))
+        .slice(-23)
+        .map((m) => ({ role: m.role, content: m._apiContent != null ? m._apiContent : m.content }));
+      // Prefer forApi over contextMessages
+      const payloadMessages = forApi.length ? forApi : contextMessages;
       if (contextMessages[0]?.role === 'assistant') contextMessages.shift();
       const response = await fetch(`${apiBase}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ messages: contextMessages, language: preferences.language || 'en' }),
+        body: JSON.stringify({ messages: payloadMessages, language: preferences.language || 'en' }),
         signal: controller.signal
       });
 
@@ -944,7 +996,154 @@
 
   // Search is automatic on the server; no manual search mode.
   if (els.search) { els.search.style.display = 'none'; }
-  $('btnAttach').onclick = () => toast('Attachments are not connected yet.');
+
+  const attachButton = $('btnAttach');
+  const fileInput = document.createElement('input');
+  fileInput.type = 'file';
+  fileInput.multiple = true;
+  fileInput.accept = 'image/*,.pdf,.txt,.md,.csv,.json,.zip,application/pdf,application/zip';
+  fileInput.style.display = 'none';
+  document.body.appendChild(fileInput);
+
+  function renderAttachHint() {
+    if (!attachButton) return;
+    if (!pendingAttachments.length) {
+      attachButton.title = 'Attach image, PDF, text, or ZIP';
+      attachButton.classList.remove('has-files');
+      return;
+    }
+    attachButton.title = pendingAttachments.map((a) => a.name).join(', ');
+    attachButton.classList.add('has-files');
+  }
+
+  async function readFileAsDataURL(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ''));
+      reader.onerror = () => reject(new Error('read failed'));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function readFileAsText(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ''));
+      reader.onerror = () => reject(new Error('read failed'));
+      reader.readAsText(file);
+    });
+  }
+
+  async function extractPdfText(file) {
+    // Lightweight: try pdf.js from CDN; fallback to notice
+    try {
+      if (!window.pdfjsLib) {
+        await new Promise((resolve, reject) => {
+          const s = document.createElement('script');
+          s.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+          s.onload = resolve;
+          s.onerror = reject;
+          document.head.appendChild(s);
+        });
+        window.pdfjsLib.GlobalWorkerOptions.workerSrc =
+          'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+      }
+      const data = new Uint8Array(await file.arrayBuffer());
+      const pdf = await window.pdfjsLib.getDocument({ data }).promise;
+      const maxPages = Math.min(pdf.numPages, 8);
+      const chunks = [];
+      for (let i = 1; i <= maxPages; i++) {
+        const page = await pdf.getPage(i);
+        const content = await page.getTextContent();
+        const text = content.items.map((it) => it.str).join(' ');
+        chunks.push('--- page ' + i + ' ---\\n' + text);
+      }
+      return chunks.join('\\n').slice(0, 14000);
+    } catch (e) {
+      return '[PDF attached: ' + file.name + '. Text extraction unavailable in this browser session.]';
+    }
+  }
+
+  async function extractZipSummary(file) {
+    try {
+      if (!window.JSZip) {
+        await new Promise((resolve, reject) => {
+          const s = document.createElement('script');
+          s.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
+          s.onload = resolve;
+          s.onerror = reject;
+          document.head.appendChild(s);
+        });
+      }
+      const zip = await window.JSZip.loadAsync(await file.arrayBuffer());
+      const names = Object.keys(zip.files).filter((n) => !zip.files[n].dir).slice(0, 40);
+      const lines = ['ZIP archive: ' + file.name, 'Files (' + names.length + ' shown):'];
+      for (const name of names) {
+        lines.push('- ' + name);
+      }
+      // Extract small text-like files
+      let extracted = 0;
+      for (const name of names) {
+        if (extracted >= 5) break;
+        if (!/\\.(txt|md|json|csv|js|ts|html|css|xml|log)$/i.test(name)) continue;
+        const entry = zip.files[name];
+        if (entry._data && entry._data.uncompressedSize > 120000) continue;
+        const text = await entry.async('string');
+        lines.push('\\n--- ' + name + ' ---\\n' + String(text).slice(0, 3000));
+        extracted++;
+      }
+      return lines.join('\\n').slice(0, 14000);
+    } catch (e) {
+      return '[ZIP attached: ' + file.name + '. Could not list contents.]';
+    }
+  }
+
+  async function handleFiles(fileList) {
+    const files = Array.from(fileList || []).slice(0, 4);
+    for (const file of files) {
+      const lower = (file.name || '').toLowerCase();
+      const type = file.type || '';
+      if (file.size > 4 * 1024 * 1024) {
+        toast('File too large (max 4MB): ' + file.name);
+        continue;
+      }
+      try {
+        if (type.startsWith('image/') || /\\.(png|jpe?g|gif|webp|bmp)$/i.test(lower)) {
+          const dataUrl = await readFileAsDataURL(file);
+          pendingAttachments.push({ name: file.name, kind: 'image', content: dataUrl });
+        } else if (type === 'application/pdf' || lower.endsWith('.pdf')) {
+          const text = await extractPdfText(file);
+          pendingAttachments.push({ name: file.name, kind: 'pdf', content: text });
+        } else if (type === 'application/zip' || lower.endsWith('.zip')) {
+          const text = await extractZipSummary(file);
+          pendingAttachments.push({ name: file.name, kind: 'zip', content: text });
+        } else {
+          const text = await readFileAsText(file);
+          pendingAttachments.push({
+            name: file.name,
+            kind: 'text',
+            content: ('[File: ' + file.name + ']\\n' + text).slice(0, 14000)
+          });
+        }
+      } catch {
+        toast('Could not read ' + file.name);
+      }
+    }
+    renderAttachHint();
+    if (pendingAttachments.length) toast(pendingAttachments.length + ' file(s) ready');
+  }
+
+  if (attachButton) {
+    attachButton.disabled = false;
+    attachButton.removeAttribute('aria-disabled');
+    attachButton.title = 'Attach image, PDF, text, or ZIP';
+    attachButton.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', async () => {
+      await handleFiles(fileInput.files);
+      fileInput.value = '';
+    });
+  }
+
 
   // Settings.
   els.setHaptic.onclick = () => {
@@ -1025,7 +1224,7 @@
   applyPreferences();
   renderHistory();
   initializeFirebase();
-  fetch(`${apiBase}/api/health`).then((response) => response.json()).then((health) => {
-    if (!health.nvidiaConfigured) toast('Add NVIDIA_API_KEY in Cloudflare settings.');
+  fetch(`${apiBase}/api/health`).then((response) => {
+    if (!response.ok) throw new Error('Health endpoint unavailable');
   }).catch(() => console.info('ChatClaud health check unavailable.'));
 })();
