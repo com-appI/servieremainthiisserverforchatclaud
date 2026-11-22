@@ -6,7 +6,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <meta name="theme-color" content="#000000" />
-<title>ChatClaud</title>
+<title>ChatClaud — ASTRION</title>
 <link rel="stylesheet" href="/styles.css">
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <script defer src="https://www.gstatic.com/firebasejs/13.4.0/firebase-app-compat.js"></script>
@@ -35,7 +35,7 @@
             <circle cx="39.5" cy="28" r="3.2" fill="#111"/>
           </svg>
         </div>
-        <h1>ChatClaud</h1>
+        <div class="top-brand"><img class="top-logo" src="/logo-astrion.jpg" alt=""/><h1>ChatClaud</h1></div>
         <p>Research. Code. Clarity.</p>
       </div>
     </div>
@@ -118,7 +118,7 @@
       <div class="group">
         <h2 data-i18n="assistant">Assistant</h2>
         <div class="card">
-          <button class="cell" type="button"><div class="label" data-i18n="model">Model</div><div class="hint">ChatClaud</div><svg class="chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></button>
+          <button class="cell" type="button"><div class="label" data-i18n="model">Model</div><div class="hint">ASTRION</div><svg class="chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></button>
           <button class="cell" type="button"><div class="label" data-i18n="webSearch">Web Search</div><div class="hint" data-i18n="webSearchHint">Auto</div><svg class="chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></button>
           <button class="cell" type="button"><div class="label" data-i18n="voice">Voice</div><div class="hint" data-i18n="voiceHint">System</div><svg class="chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></button>
         </div>
@@ -146,12 +146,12 @@
 
 <!-- Firebase authentication -->
 <section class="modal-overlay hidden" id="authOverlay" aria-modal="true" role="dialog" aria-labelledby="authTitle">
-  <div class="modal-card auth-card">
+  <div class="modal-card auth-card auth-card-premium">
     <button class="modal-close" id="authClose" type="button" aria-label="Close">×</button>
-    <div class="modal-brand-mark">✧</div>
+    <div class="modal-brand-mark"><img src="/logo-astrion.jpg" alt="ASTRION" width="56" height="56"/></div>
     <p class="modal-eyebrow">ACCOUNT</p>
     <h2 id="authTitle">Welcome back</h2>
-    <p class="modal-subtitle" id="authSubtitle">Sign in to continue using ChatClaud.</p>
+    <p class="modal-subtitle" id="authSubtitle">Sign in to continue with ASTRION.</p>
     <div class="auth-tabs" role="tablist" aria-label="Account type">
       <button class="auth-tab active" id="loginTab" type="button" role="tab" aria-selected="true">Sign in</button>
       <button class="auth-tab" id="registerTab" type="button" role="tab" aria-selected="false">Register</button>
