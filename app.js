@@ -36,8 +36,69 @@
   const preferences = {
     haptics: localStorage.getItem('ghost-haptics') === 'true',
     enterToSend: localStorage.getItem('ghost-enter-send') !== 'false',
-    animations: localStorage.getItem('ghost-animations') !== 'false'
+    animations: localStorage.getItem('ghost-animations') !== 'false',
+    language: localStorage.getItem('chatclaud-lang') || 'en'
   };
+
+  const I18N = {
+    en: {
+      settings: 'Settings', profile: 'Profile', chats: 'Chats', about: 'About', assistant: 'Assistant',
+      haptics: 'Haptics', enterSend: 'Press Enter to Send', animations: 'Animations',
+      model: 'Model', webSearch: 'Web Search', webSearchHint: 'Auto', voice: 'Voice', voiceHint: 'System',
+      version: 'Version', language: 'Language', messagePlaceholder: 'Message',
+      sources: 'Sources', thinking: 'Thinking…', searching: 'Searching the web…', reading: 'Reading sources…',
+      tryAgain: 'Try again', copied: 'Copied', newChat: 'New chat', signIn: 'Sign in', signOut: 'Sign out'
+    },
+    ru: {
+      settings: 'Настройки', profile: 'Профиль', chats: 'Чаты', about: 'О приложении', assistant: 'Ассистент',
+      haptics: 'Вибрация', enterSend: 'Enter — отправить', animations: 'Анимации',
+      model: 'Модель', webSearch: 'Поиск', webSearchHint: 'Авто', voice: 'Голос', voiceHint: 'Системный',
+      version: 'Версия', language: 'Язык', messagePlaceholder: 'Сообщение',
+      sources: 'Источники', thinking: 'Думаю…', searching: 'Ищу в сети…', reading: 'Читаю источники…',
+      tryAgain: 'Повторить', copied: 'Скопировано', newChat: 'Новый чат', signIn: 'Войти', signOut: 'Выйти'
+    },
+    de: {
+      settings: 'Einstellungen', profile: 'Profil', chats: 'Chats', about: 'Über', assistant: 'Assistent',
+      haptics: 'Haptik', enterSend: 'Enter zum Senden', animations: 'Animationen',
+      model: 'Modell', webSearch: 'Websuche', webSearchHint: 'Auto', voice: 'Stimme', voiceHint: 'System',
+      version: 'Version', language: 'Sprache', messagePlaceholder: 'Nachricht',
+      sources: 'Quellen', thinking: 'Denke nach…', searching: 'Suche im Web…', reading: 'Quellen lesen…',
+      tryAgain: 'Erneut versuchen', copied: 'Kopiert', newChat: 'Neuer Chat', signIn: 'Anmelden', signOut: 'Abmelden'
+    },
+    fr: {
+      settings: 'Réglages', profile: 'Profil', chats: 'Discussions', about: 'À propos', assistant: 'Assistant',
+      haptics: 'Retour haptique', enterSend: 'Entrée pour envoyer', animations: 'Animations',
+      model: 'Modèle', webSearch: 'Recherche', webSearchHint: 'Auto', voice: 'Voix', voiceHint: 'Système',
+      version: 'Version', language: 'Langue', messagePlaceholder: 'Message',
+      sources: 'Sources', thinking: 'Réflexion…', searching: 'Recherche web…', reading: 'Lecture des sources…',
+      tryAgain: 'Réessayer', copied: 'Copié', newChat: 'Nouveau chat', signIn: 'Connexion', signOut: 'Déconnexion'
+    }
+  };
+
+  function t(key) {
+    const lang = preferences.language || 'en';
+    return (I18N[lang] && I18N[lang][key]) || I18N.en[key] || key;
+  }
+
+  function applyI18n() {
+    document.querySelectorAll('[data-i18n]').forEach((el) => {
+      const key = el.getAttribute('data-i18n');
+      if (key) el.textContent = t(key);
+    });
+    document.querySelectorAll('[data-i18n-placeholder]').forEach((el) => {
+      const key = el.getAttribute('data-i18n-placeholder');
+      if (key) el.setAttribute('placeholder', t(key));
+    });
+    document.querySelectorAll('.lang-btn').forEach((btn) => {
+      btn.classList.toggle('active', btn.getAttribute('data-lang') === preferences.language);
+    });
+    // live agent label if visible
+    if (window.__agentUI?.labelEl) {
+      /* leave streaming labels as-is unless idle */
+    }
+  }
+
+
   let voiceRecognition = null;
   let voiceListening = false;
 
@@ -88,6 +149,8 @@
     localStorage.setItem('ghost-haptics', String(preferences.haptics));
     localStorage.setItem('ghost-enter-send', String(preferences.enterToSend));
     localStorage.setItem('ghost-animations', String(preferences.animations));
+    localStorage.setItem('chatclaud-lang', preferences.language || 'en');
+    applyI18n();
     applyPreferences();
   }
 
@@ -351,7 +414,7 @@
           const retry = document.createElement('button');
           retry.className = 'retry';
           retry.type = 'button';
-          retry.textContent = 'Try again';
+          retry.textContent = t('tryAgain');
           retry.addEventListener('click', () => retryLast());
           wrap.appendChild(retry);
         }
@@ -370,7 +433,7 @@
       '<button type="button" aria-label="Copy" title="Copy"><svg viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M4 16V6a2 2 0 0 1 2-2h10"/></svg></button>' +
       '<button type="button" aria-label="Speak" title="Speak"><svg viewBox="0 0 24 24"><path d="M4 9v6h3l5 4V5L7 9H4z"/><path d="M16 9a3 3 0 0 1 0 6M18.5 7a6 6 0 0 1 0 10"/></svg></button>';
     actions.children[0].addEventListener('click', async () => {
-      try { await navigator.clipboard.writeText(text); toast('Copied'); }
+      try { await navigator.clipboard.writeText(text); toast(t('copied')); }
       catch { toast('Could not copy'); }
     });
     actions.children[1].addEventListener('click', () => {
@@ -394,7 +457,7 @@
       const el = document.createElement('div');
       el.id = 'agentStatus';
       el.className = 'agent-status';
-      el.innerHTML = '<div class="ghost-mark" aria-hidden="true">' + GHOST_SVG + '</div><div class="agent-label">Thinking…</div>';
+      el.innerHTML = '<div class="ghost-mark" aria-hidden="true">' + GHOST_SVG + '</div><div class="agent-label">' + t('thinking') + '</div>';
       els.feed.appendChild(el);
       this.el = el;
       this.labelEl = el.querySelector('.agent-label');
@@ -605,7 +668,7 @@
     return (
       '<div class="sources-wrap">' +
         '<button type="button" class="sources-toggle" aria-expanded="false">' +
-          globe + '<span>Sources</span><span class="sources-count">' + items.length + '</span>' +
+          globe + '<span>' + t('sources') + '</span><span class="sources-count">' + items.length + '</span>' +
         '</button>' +
         '<div class="sources-panel" hidden>' + rows + '</div>' +
       '</div>'
@@ -652,7 +715,7 @@
       const response = await fetch(`${apiBase}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ messages: contextMessages }),
+        body: JSON.stringify({ messages: contextMessages, language: preferences.language || 'en' }),
         signal: controller.signal
       });
 
@@ -891,6 +954,15 @@
   };
   els.setEnter.onclick = () => { preferences.enterToSend = !preferences.enterToSend; savePreferences(); };
   els.setAnimations.onclick = () => { preferences.animations = !preferences.animations; savePreferences(); };
+  document.getElementById('langGrid')?.addEventListener('click', (event) => {
+    const btn = event.target.closest('.lang-btn');
+    if (!btn) return;
+    const lang = btn.getAttribute('data-lang');
+    if (!lang || !I18N[lang]) return;
+    preferences.language = lang;
+    savePreferences();
+    toast(t('language') + ': ' + btn.textContent.trim());
+  });
 
   // Authentication and profile dialogs.
   els.authClose.onclick = closeAuth;

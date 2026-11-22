@@ -98,35 +98,46 @@
         <svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg>
       </button>
     </div>
-    <h1>Settings</h1>
+    <h1 data-i18n="settings">Settings</h1>
     <div class="panel-scroll">
       <div class="group">
-        <h2>Profile</h2>
+        <h2 data-i18n="profile">Profile</h2>
         <div class="card">
           <button class="cell" type="button" id="btnProfile"><div class="label">Profile</div><div class="hint" id="profileHint">Guest</div><svg class="chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></button>
           <button class="cell" type="button" id="btnAuth"><div class="label">Account</div><div class="hint" id="accountHint">Sign in</div><svg class="chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></button>
         </div>
       </div>
       <div class="group">
-        <h2>Chats</h2>
+        <h2 data-i18n="chats">Chats</h2>
         <div class="card">
-          <button class="cell" type="button" id="setHaptic"><div class="label">Haptics</div><div class="toggle" id="toggleHaptic"></div></button>
-          <button class="cell" type="button" id="setSendEnter"><div class="label">Press Enter to Send</div><div class="toggle on" id="toggleEnter"></div></button>
-          <button class="cell" type="button" id="setAnimations"><div class="label">Animations</div><div class="toggle on" id="toggleAnimations"></div></button>
+          <button class="cell" type="button" id="setHaptic"><div class="label" data-i18n="haptics">Haptics</div><div class="toggle" id="toggleHaptic"></div></button>
+          <button class="cell" type="button" id="setSendEnter"><div class="label" data-i18n="enterSend">Press Enter to Send</div><div class="toggle on" id="toggleEnter"></div></button>
+          <button class="cell" type="button" id="setAnimations"><div class="label" data-i18n="animations">Animations</div><div class="toggle on" id="toggleAnimations"></div></button>
         </div>
       </div>
       <div class="group">
-        <h2>Assistant</h2>
+        <h2 data-i18n="assistant">Assistant</h2>
         <div class="card">
-          <button class="cell" type="button"><div class="label">Model</div><div class="hint">ChatClaud</div><svg class="chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></button>
-          <button class="cell" type="button"><div class="label">Web Search</div><div class="hint">Soon</div><svg class="chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></button>
-          <button class="cell" type="button"><div class="label">Voice</div><div class="hint">System</div><svg class="chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></button>
+          <button class="cell" type="button"><div class="label" data-i18n="model">Model</div><div class="hint">ChatClaud</div><svg class="chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></button>
+          <button class="cell" type="button"><div class="label" data-i18n="webSearch">Web Search</div><div class="hint" data-i18n="webSearchHint">Auto</div><svg class="chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></button>
+          <button class="cell" type="button"><div class="label" data-i18n="voice">Voice</div><div class="hint" data-i18n="voiceHint">System</div><svg class="chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></button>
         </div>
       </div>
       <div class="group">
-        <h2>About</h2>
+        <h2 data-i18n="language">Language</h2>
+        <div class="card language-card">
+          <div class="lang-grid" id="langGrid" role="listbox" aria-label="Language">
+            <button type="button" class="lang-btn" data-lang="en" role="option">English</button>
+            <button type="button" class="lang-btn" data-lang="ru" role="option">Русский</button>
+            <button type="button" class="lang-btn" data-lang="de" role="option">Deutsch</button>
+            <button type="button" class="lang-btn" data-lang="fr" role="option">Français</button>
+          </div>
+        </div>
+      </div>
+      <div class="group">
+        <h2 data-i18n="about">About</h2>
         <div class="card">
-          <button class="cell" type="button"><div class="label">Version</div><div class="hint">0.2 UI</div></button>
+          <button class="cell" type="button"><div class="label" data-i18n="version">Version</div><div class="hint">0.2 UI</div></button>
         </div>
       </div>
     </div>

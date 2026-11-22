@@ -397,11 +397,18 @@ async function researchWeb(query, env, signal) {
   return { results, context, diagnostics: { ...search.diagnostics, pagesAttempted: Math.min(results.length, 3), pagesRead: pageByUrl.size } };
 }
 
-function withSystemIdentity(messages, webContext = "") {
+function withSystemIdentity(messages, webContext = "", language = "en") {
+  const lang = ["en","ru","de","fr"].includes(language) ? language : "en";
+  const languageDirective = {
+    en: "Reply in English unless the user writes in another language.",
+    ru: "Reply in Russian when the user writes in Russian; otherwise use the user's language.",
+    de: "Reply in German when the user writes in German; otherwise use the user's language.",
+    fr: "Reply in French when the user writes in French; otherwise use the user's language."
+  }[lang];
   const cloned = messages
     .filter((m) => m.role === "user" || m.role === "assistant")
     .map((m) => ({ role: m.role, content: m.content }));
-  cloned.unshift({ role: "system", content: CHATCLAUD_SYSTEM });
+  cloned.unshift({ role: "system", content: CHATCLAUD_SYSTEM + "\n\nUI language preference: " + lang + ". " + languageDirective });
   if (webContext) {
     cloned.splice(1, 0, {
       role: "system",
@@ -417,6 +424,14 @@ function withSearchFailureNotice(messages, reason = "") {
 }
 
 function streamChat(request, messages, env, options = {}) {
+  const uiLanguage = ["en","ru","de","fr"].includes(options.language) ? options.language : "en";
+  const languageDirective = {
+    en: "Reply in English unless the user writes in another language.",
+    ru: "Отвечай по-русски, если пользователь пишет по-русски; иначе на языке пользователя.",
+    de: "Antworte auf Deutsch, wenn der Nutzer Deutsch schreibt; sonst in der Sprache des Nutzers.",
+    fr: "Réponds en français si l'utilisateur écrit en français; sinon dans sa langue."
+  }[uiLanguage];
+
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
   const aborter = new AbortController();
@@ -488,7 +503,7 @@ function streamChat(request, messages, env, options = {}) {
           },
           body: JSON.stringify({
             model: MODEL,
-            messages: withSystemIdentity(effectiveMessages, webContext),
+            messages: withSystemIdentity(effectiveMessages, webContext, uiLanguage),
             temperature: 1,
             top_p: 0.95,
             max_tokens: 16384,
@@ -608,8 +623,9 @@ async function handleChat(request, env) {
   const messages = validateMessages(body.messages);
   if (!messages) return json({ type: "error", code: "invalid_messages", error: "Invalid message format." }, 400);
   const forceSearch = body.forceSearch === true || body.search === true;
+  const language = typeof body.language === "string" ? body.language.slice(0, 8).toLowerCase() : "en";
 
-  return new Response(streamChat(request, messages, env, { forceSearch }), {
+  return new Response(streamChat(request, messages, env, { forceSearch, language }), {
     headers: {
       "content-type": "text/event-stream; charset=utf-8",
       "cache-control": "no-cache, no-transform",
