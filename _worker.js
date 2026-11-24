@@ -273,6 +273,58 @@ function messagesHaveImages(messages) {
   return false;
 }
 
+
+/** Truncate text without breaking surrogate pairs or trailing backslash/\u escapes. */
+function safeTruncate(str, max) {
+  let s = String(str == null ? "" : str);
+  if (s.length <= max) return s;
+  s = s.slice(0, max);
+  // Drop unpaired high surrogate at the end
+  if (s.length) {
+    const c = s.charCodeAt(s.length - 1);
+    if (c >= 0xD800 && c <= 0xDBFF) s = s.slice(0, -1);
+  }
+  // Never end with a single backslash (would break if later misinterpreted)
+  while (s.endsWith("\\")) s = s.slice(0, -1);
+  return s;
+}
+
+/** Sanitize text fields before they enter NVIDIA message objects. */
+function sanitizeText(str, max = 16000) {
+  let s = String(str == null ? "" : str);
+  // Replace unpaired surrogates (invalid UTF-16) that can corrupt some parsers
+  s = s.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/g, "\uFFFD");
+  s = s.replace(/(^|[^\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "$1\uFFFD");
+  return safeTruncate(s, max);
+}
+
+/** Build tool content JSON without slicing mid-escape. */
+function toolContentJson(obj, maxLen = 12000) {
+  let payload = obj;
+  let out = JSON.stringify(payload);
+  if (out.length <= maxLen) return out;
+  // Shrink known text fields, then re-stringify (always valid JSON text)
+  if (payload && typeof payload === "object") {
+    payload = { ...payload };
+    if (typeof payload.text === "string") payload.text = safeTruncate(payload.text, Math.max(200, maxLen - 800));
+    if (typeof payload.snippet === "string") payload.snippet = safeTruncate(payload.snippet, 400);
+    if (typeof payload.error === "string") payload.error = safeTruncate(payload.error, 200);
+    if (Array.isArray(payload.results)) {
+      payload.results = payload.results.slice(0, 6).map((r) => ({
+        title: safeTruncate(r.title || "", 120),
+        url: safeTruncate(r.url || "", 300),
+        snippet: safeTruncate(r.snippet || "", 280)
+      }));
+    }
+    out = JSON.stringify(payload);
+  }
+  if (out.length > maxLen) {
+    // Last resort: minimal valid JSON
+    out = JSON.stringify({ ok: false, error: "Tool result too large after truncation." });
+  }
+  return out;
+}
+
 function contentToText(content) {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
@@ -299,9 +351,8 @@ function normalizeContent(content) {
   for (const part of content) {
     if (!part || typeof part !== "object") continue;
     if (part.type === "text" && typeof part.text === "string") {
-      let text = part.text.trim();
+      let text = sanitizeText(part.text.trim(), Math.min(budget, MAX_MESSAGE_CHARS));
       if (!text) continue;
-      if (text.length > budget) text = text.slice(0, budget);
       budget -= text.length;
       parts.push({ type: "text", text });
     } else if (part.type === "image_url" && part.image_url && typeof part.image_url.url === "string") {
@@ -315,9 +366,8 @@ function normalizeContent(content) {
         budget -= 50;
       }
     } else if ((part.type === "text" || part.type === "file_text") && typeof part.text === "string") {
-      let text = String(part.text || "").trim();
+      let text = sanitizeText(String(part.text || "").trim(), Math.min(budget, MAX_MESSAGE_CHARS));
       if (!text) continue;
-      if (text.length > budget) text = text.slice(0, budget);
       budget -= text.length;
       parts.push({ type: "text", text });
     }
@@ -873,7 +923,7 @@ async function runAgentTools(toolCalls, env, signal, send, knownSearchUrls = new
         tool_call_id: call.id,
         role: "tool",
         name: "web_search",
-        content: JSON.stringify(payload).slice(0, 12000)
+        content: toolContentJson(payload, 12000)
       });
     } else if (call.name === "remember") {
       const fact = String(call.args?.fact || "").trim().slice(0, 400);
@@ -938,12 +988,12 @@ async function runAgentTools(toolCalls, env, signal, send, knownSearchUrls = new
           tool_call_id: call.id,
           role: "tool",
           name: "open_page",
-          content: JSON.stringify({
+          content: toolContentJson({
             ok: Boolean(text),
             url: safeUrl.href,
-            text: (text || "").slice(0, 8000),
+            text: sanitizeText(text || "", 8000),
             error: text ? undefined : "The page could not be read or did not return supported text."
-          })
+          }, 12000)
         });
       } catch (error) {
         results.push({
@@ -1038,7 +1088,7 @@ async function runMultimodalExtract(messages, apiKey, signal) {
         if (p?.type === "image_url" && p.image_url?.url) {
           userParts.push({ type: "image_url", image_url: { url: p.image_url.url } });
         } else if (p?.type === "text" && p.text) {
-          userParts.push({ type: "text", text: String(p.text).slice(0, 2000) });
+          userParts.push({ type: "text", text: sanitizeText(String(p.text), 2000) });
         }
       }
     }
@@ -1087,7 +1137,7 @@ async function runMultimodalExtract(messages, apiKey, signal) {
   try { data = JSON.parse(raw || "{}"); } catch { return { ok: false, error: "vision_bad_json" }; }
   const text = extractAnyTextFromChoice(data);
   if (!text) return { ok: false, error: "vision_empty" };
-  return { ok: true, text: text.slice(0, 6000) };
+  return { ok: true, text: sanitizeText(text, 6000) };
 }
 
 async function completeAnswerOnce(messages, apiKey, signal) {
@@ -1097,7 +1147,7 @@ async function completeAnswerOnce(messages, apiKey, signal) {
   for (const m of messages || []) {
     if (!m || typeof m !== "object") continue;
     if (m.role === "tool") {
-      toolBits.push(String(m.content || "").slice(0, 6000));
+      toolBits.push(sanitizeText(String(m.content || ""), 6000));
       continue;
     }
     if (m.role === "assistant" && m.tool_calls) {
@@ -1108,7 +1158,23 @@ async function completeAnswerOnce(messages, apiKey, signal) {
       continue;
     }
     if (m.role === "system" || m.role === "user" || m.role === "assistant") {
-      cleaned.push({ role: m.role, content: m.content });
+      let content = m.content;
+      if (typeof content === "string") content = sanitizeText(content, MAX_MESSAGE_CHARS);
+      else if (Array.isArray(content)) {
+        content = content.map((p) => {
+          if (!p || typeof p !== "object") return p;
+          if (p.type === "text") return { type: "text", text: sanitizeText(p.text || "", MAX_MESSAGE_CHARS) };
+          if (p.type === "image_url" && p.image_url && typeof p.image_url.url === "string") {
+            // Keep data URLs intact — do not slice mid-base64
+            const url = p.image_url.url;
+            if (url.startsWith("data:image/") && url.length < 4_500_000) return { type: "image_url", image_url: { url } };
+            if (url.startsWith("https://") && url.length < 2048) return { type: "image_url", image_url: { url } };
+            return { type: "text", text: "[image omitted: unsupported url]" };
+          }
+          return p;
+        });
+      }
+      cleaned.push({ role: m.role, content });
     }
   }
   if (toolBits.length) {
@@ -1155,13 +1221,16 @@ async function completeAnswerOnce(messages, apiKey, signal) {
     let error = "nvidia_http_" + response.status;
     if (/multimodal/i.test(detail) && /not enabled/i.test(detail)) {
       error = "vision_not_enabled_on_model";
+    } else if (/hex escape|deserialize|JSON body/i.test(detail)) {
+      error = "bad_request_json";
     }
     return {
       ok: false,
       status: response.status,
       error,
-      detail,
-      model: modelId
+      detail: detail.slice(0, 240),
+      model: modelId,
+      stage: useVision ? "multimodal_or_main_with_images" : "main_complete"
     };
   }
   let data;
@@ -1376,6 +1445,11 @@ function streamChat(request, messages, env, options = {}) {
             sendError(
               "vision_unsupported",
               "This text model cannot read images. Vision requests use Nemotron VL; check NVIDIA access to nvidia/nemotron-3.5-super-vl-120b-a12b."
+            );
+          } else if (result.error === "bad_request_json") {
+            sendError(
+              "bad_request_json",
+              "Request encoding failed (invalid JSON escapes in payload). Stage: " + (result.stage || "unknown") + ". Try a shorter message without broken attachments."
             );
           } else {
             sendError(
