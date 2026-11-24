@@ -50,7 +50,11 @@ Product: ChatClaud. Model identity: ASTRION. Year context: 2026.
 When asked who you are, say you are ASTRION in ChatClaud.
 Never name external providers, APIs, or other assistant brands.
 
-You have tools for live web research. Use them when you need current facts, news, prices, docs, or anything that may have changed. Do not use tools for pure chat, creative writing, or simple math.
+You have tools: web_search, open_page, calc, remember.
+- web_search / open_page: current facts, news, docs, prices — model decides, no need for the user to say "search".
+- calc: exact arithmetic.
+- remember: persist durable user facts they stated (name, city, preferences). Use sparingly.
+Do not use tools for pure small talk.
 
 Users may attach images and document text (PDF/TXT/ZIP extracts). When an image is present, describe and analyze what is visible. When document text is present, answer from that content and quote short relevant spans.
 
@@ -612,7 +616,7 @@ async function readWebPage(value, signal, knownSearchUrls = new Set()) {
   return basicHtmlText(raw).slice(0, MAX_PAGE_TEXT);
 }
 
-function withSystemIdentity(messages, webContext = "", language = "en") {
+function withSystemIdentity(messages, webContext = "", language = "en", extra = {}) {
   const lang = ["en","ru","de","fr"].includes(language) ? language : "en";
   const languageDirective = {
     en: "Reply in English unless the user writes in another language.",
@@ -623,7 +627,16 @@ function withSystemIdentity(messages, webContext = "", language = "en") {
   const cloned = messages
     .filter((m) => m.role === "user" || m.role === "assistant")
     .map((m) => ({ role: m.role, content: m.content }));
-  cloned.unshift({ role: "system", content: CHATCLAUD_SYSTEM + "\n\nUI language preference: " + lang + ". " + languageDirective });
+  let system = CHATCLAUD_SYSTEM + "\n\nUI language preference: " + lang + ". " + languageDirective;
+  const mem = String(extra.memory || "").trim().slice(0, 2500);
+  if (mem) {
+    system += "\n\nLONG-TERM USER MEMORY (trusted product data, not web content). Use when relevant; do not invent extra personal facts.\n" + mem;
+  }
+  const summary = String(extra.summary || "").trim().slice(0, 1800);
+  if (summary) {
+    system += "\n\nCONVERSATION SUMMARY (earlier turns compressed). Prefer recent messages if they conflict.\n" + summary;
+  }
+  cloned.unshift({ role: "system", content: system });
   if (webContext) {
     cloned.splice(1, 0, {
       role: "system",
@@ -631,6 +644,37 @@ function withSystemIdentity(messages, webContext = "", language = "en") {
     });
   }
   return cloned;
+}
+
+async function verifyAnswerDraft(apiKey, draft, sources, signal) {
+  const text = String(draft || "").trim();
+  if (!text || text.length < 40) return { ok: true, draft: text };
+  const sourceList = (sources || []).slice(0, 6).map((s, i) => (i + 1) + ". " + (s.title || "") + " — " + (s.url || "")).join("\n");
+  const messages = [
+    {
+      role: "system",
+      content: "You are a strict factual checker for ASTRION. Reply with ONLY valid JSON: {\"ok\":boolean,\"issues\":string[],\"revised\":string}. If claims need sources and sources are missing, set ok=false and put a safer revised answer in revised (no invented URLs). If fine, ok=true and revised can be empty."
+    },
+    {
+      role: "user",
+      content: "ANSWER:\n" + text.slice(0, 6000) + "\n\nSOURCES:\n" + (sourceList || "(none)")
+    }
+  ];
+  try {
+    const resp = await nvidiaChatOnce(messages, apiKey, signal, { tools: null, stream: false, temperature: 0 });
+    if (!resp.ok) return { ok: true, draft: text };
+    const data = await resp.json();
+    const raw = data?.choices?.[0]?.message?.content || "";
+    const m = String(raw).match(/\{[\s\S]*\}/);
+    if (!m) return { ok: true, draft: text };
+    const parsed = JSON.parse(m[0]);
+    if (parsed && parsed.ok === false && typeof parsed.revised === "string" && parsed.revised.trim()) {
+      return { ok: false, draft: parsed.revised.trim().slice(0, 12000), issues: parsed.issues || [] };
+    }
+    return { ok: true, draft: text };
+  } catch {
+    return { ok: true, draft: text };
+  }
 }
 
 const AGENT_TOOLS = [
@@ -646,6 +690,35 @@ const AGENT_TOOLS = [
         },
         required: ["query"],
         additionalProperties: false
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "remember",
+      description: "Store a durable fact about the user for future chats (name, location, preferences, goals). Only store clear user-stated facts, never guesses.",
+      parameters: {
+        type: "object",
+        properties: {
+          fact: { type: "string", description: "Short factual statement about the user" },
+          category: { type: "string", enum: ["identity", "location", "preference", "goal", "other"], description: "Memory category" }
+        },
+        required: ["fact"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "calc",
+      description: "Evaluate a simple arithmetic expression (numbers, + - * / ^ parentheses). Use for exact math.",
+      parameters: {
+        type: "object",
+        properties: {
+          expression: { type: "string", description: "Math expression e.g. (2+3)*4" }
+        },
+        required: ["expression"]
       }
     }
   },
@@ -782,6 +855,46 @@ async function runAgentTools(toolCalls, env, signal, send, knownSearchUrls = new
         name: "web_search",
         content: JSON.stringify(payload).slice(0, 12000)
       });
+    } else if (call.name === "remember") {
+      const fact = String(call.args?.fact || "").trim().slice(0, 400);
+      const category = String(call.args?.category || "other").slice(0, 32);
+      send({ type: "status", stage: "memory", label: "Saving memory…" });
+      if (fact.length >= 6) {
+        send({ type: "memory", fact, category });
+        results.push({
+          tool_call_id: call.id,
+          role: "tool",
+          name: "remember",
+          content: JSON.stringify({ ok: true, stored: true, fact, category })
+        });
+      } else {
+        results.push({
+          tool_call_id: call.id,
+          role: "tool",
+          name: "remember",
+          content: JSON.stringify({ ok: false, error: "Fact too short" })
+        });
+      }
+    } else if (call.name === "calc") {
+      const expr = String(call.args?.expression || call.args?.expr || "").trim().slice(0, 200);
+      send({ type: "status", stage: "calc", label: "Calculating…" });
+      let result;
+      try {
+        if (!/^[\d\s+\-*/().^%eE]+$/.test(expr) || expr.length < 1) throw new Error("invalid");
+        const safe = expr.replace(/\^/g, "**");
+        // eslint-disable-next-line no-new-func
+        const val = Function('"use strict"; return (' + safe + ")")();
+        if (typeof val !== "number" || !Number.isFinite(val)) throw new Error("nan");
+        result = { ok: true, expression: expr, value: val };
+      } catch {
+        result = { ok: false, error: "Could not evaluate expression safely." };
+      }
+      results.push({
+        tool_call_id: call.id,
+        role: "tool",
+        name: "calc",
+        content: JSON.stringify(result)
+      });
     } else if (call.name === "open_page") {
       const requested = String(call.args?.url || "").trim();
       const safeUrl = safePublicHttpsUrl(requested);
@@ -831,6 +944,10 @@ async function runAgentTools(toolCalls, env, signal, send, knownSearchUrls = new
 }
 
 function streamChat(request, messages, env, options = {}) {
+  const memoryText = typeof options.memory === "string" ? options.memory : "";
+  const summaryText = typeof options.summary === "string" ? options.summary : "";
+  const coreExtra = { memory: memoryText, summary: summaryText };
+
   const uiLanguage = ["en", "ru", "de", "fr"].includes(options.language) ? options.language : "en";
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
@@ -859,7 +976,7 @@ function streamChat(request, messages, env, options = {}) {
         send({ type: "status", stage: "thinking", label: "Thinking…" });
         let webSources = [];
         const knownSearchUrls = new Set();
-        let agentMessages = withSystemIdentity(messages, "", uiLanguage);
+        let agentMessages = withSystemIdentity(messages, "", uiLanguage, coreExtra);
         let agentFailure = "";
         let exhaustedToolBudget = false;
 
@@ -874,7 +991,7 @@ function streamChat(request, messages, env, options = {}) {
             const ctx = webSources.map((r, i) =>
               `[Source ${i + 1}] ${r.title}\nURL: ${r.url}\n${r.snippet || ""}`
             ).join("\n\n");
-            agentMessages = withSystemIdentity(messages, ctx, uiLanguage);
+            agentMessages = withSystemIdentity(messages, ctx, uiLanguage, coreExtra);
           } else {
             agentFailure = pack.diagnostics?.reason || "Serper did not return usable results.";
           }
@@ -961,6 +1078,19 @@ function streamChat(request, messages, env, options = {}) {
 
         if (aborter.signal.aborted) return;
         send({ type: "status", stage: "answer", label: "Writing answer…" });
+
+        if (webSources.length) {
+          agentMessages.push({
+            role: "system",
+            content: "You used live tools. Ground factual claims in the tool results and sources already provided. Do not invent URLs. If evidence is incomplete, say what is uncertain."
+          });
+        }
+        if (agentFailure) {
+          agentMessages.push({
+            role: "system",
+            content: "Tool-loop note: " + String(agentFailure).slice(0, 300)
+          });
+        }
 
         const upstream = await fetch(NVIDIA_URL, {
           method: "POST",
@@ -1111,8 +1241,10 @@ async function handleChat(request, env) {
   if (!messages) return json({ type: "error", code: "invalid_messages", error: "Invalid message format." }, 400);
   const forceSearch = body.forceSearch === true || body.search === true;
   const language = typeof body.language === "string" ? body.language.slice(0, 8).toLowerCase() : "en";
+  const memory = typeof body.memory === "string" ? body.memory.slice(0, 2500) : "";
+  const summary = typeof body.summary === "string" ? body.summary.slice(0, 1800) : "";
 
-  return new Response(streamChat(request, messages, env, { forceSearch, language }), {
+  return new Response(streamChat(request, messages, env, { forceSearch, language, memory, summary }), {
     headers: {
       "content-type": "text/event-stream; charset=utf-8",
       "cache-control": "no-cache, no-transform",
@@ -1147,6 +1279,7 @@ export default {
         ok: true,
         service: "ChatClaud",
         assistant: "ASTRION",
+        core: "2.0",
         model: MODEL,
         nvidiaConfigured: Boolean(getNvidiaApiKey(env)),
         serperConfigured: Boolean(getSerperApiKey(env)),

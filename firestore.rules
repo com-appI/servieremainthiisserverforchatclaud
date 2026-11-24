@@ -10,15 +10,30 @@ service cloud.firestore {
         && request.resource.data.keys().hasAll([
           'title', 'messages', 'createdAt', 'updatedAt'
         ])
-        && request.resource.data.keys().hasOnly([
-          'title', 'messages', 'createdAt', 'updatedAt'
-        ])
         && request.resource.data.title is string
         && request.resource.data.title.size() <= 100
         && request.resource.data.messages is list
         && request.resource.data.messages.size() <= 24
         && request.resource.data.createdAt is timestamp
-        && request.resource.data.updatedAt is timestamp;
+        && request.resource.data.updatedAt is timestamp
+        && (!('summary' in request.resource.data.keys())
+            || (request.resource.data.summary is string
+                && request.resource.data.summary.size() <= 2000));
+    }
+
+    match /users/{userId}/memories/{memoryId} {
+      allow read, delete: if request.auth != null && request.auth.uid == userId;
+      allow create, update: if request.auth != null
+        && request.auth.uid == userId
+        && request.resource.data.keys().hasAll(['text', 'updatedAt'])
+        && request.resource.data.text is string
+        && request.resource.data.text.size() > 0
+        && request.resource.data.text.size() <= 500
+        && request.resource.data.updatedAt is timestamp
+        && (!('tags' in request.resource.data.keys())
+            || request.resource.data.tags is list)
+        && (!('source' in request.resource.data.keys())
+            || request.resource.data.source is string);
     }
   }
 }

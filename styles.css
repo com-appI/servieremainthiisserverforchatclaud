@@ -911,3 +911,84 @@ pre.code-block code {
 .tool.has-files {
   box-shadow: 0 0 0 1px rgba(110,168,255,0.45), 0 0 16px rgba(110,168,255,0.2);
 }
+
+/* Attach orb — white circle, no ghost */
+.attach-btn {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  display: grid;
+  place-items: center;
+}
+.attach-orb {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: #f2f4f8;
+  display: grid;
+  place-items: center;
+  box-shadow: 0 0 0 1px rgba(255,255,255,0.08), 0 4px 14px rgba(0,0,0,0.35);
+}
+.attach-btn.has-files .attach-orb {
+  box-shadow: 0 0 0 2px rgba(110,168,255,0.55), 0 4px 16px rgba(110,168,255,0.25);
+}
+.attach-strip {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 0 4px 8px;
+  -webkit-overflow-scrolling: touch;
+}
+.attach-strip[hidden] { display: none !important; }
+.attach-chip {
+  position: relative;
+  flex: 0 0 auto;
+  width: 64px;
+  height: 64px;
+  border-radius: 14px;
+  background: rgba(255,255,255,0.06);
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.08);
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+}
+.attach-chip img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.attach-chip .file-icon {
+  width: 28px;
+  height: 28px;
+  opacity: 0.9;
+}
+.attach-chip .chip-name {
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  padding: 3px 4px;
+  font-size: 9px;
+  line-height: 1.2;
+  color: #e8eef8;
+  background: linear-gradient(transparent, rgba(0,0,0,0.75));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: center;
+}
+.attach-chip .chip-x {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(0,0,0,0.65);
+  color: #fff;
+  font-size: 12px;
+  line-height: 18px;
+  padding: 0;
+  cursor: pointer;
+}

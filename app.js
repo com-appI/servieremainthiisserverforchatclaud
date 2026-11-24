@@ -37,10 +37,120 @@
     haptics: localStorage.getItem('ghost-haptics') === 'true',
     enterToSend: localStorage.getItem('ghost-enter-send') !== 'false',
     animations: localStorage.getItem('ghost-animations') !== 'false',
-    language: localStorage.getItem('chatclaud-lang') || 'en'
+    language: localStorage.getItem('chatclaud-lang') || 'en',
+    memoryEnabled: localStorage.getItem('chatclaud-memory') !== 'false'
   };
   /** @type {{name:string,kind:string,content:any}[]} */
   let pendingAttachments = [];
+  let memoryCache = [];
+
+  async function loadUserMemories() {
+    memoryCache = [];
+    if (!state.user || !state.db) return [];
+    try {
+      const snap = await state.db.collection('users').doc(state.user.uid)
+        .collection('memories').orderBy('updatedAt', 'desc').limit(12).get();
+      memoryCache = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    } catch (e) {
+      console.warn('memory load', e);
+    }
+    return memoryCache;
+  }
+
+  function rankMemories(query) {
+    const q = String(query || '').toLowerCase();
+    const tokens = q.split(/[^a-zA-Zа-яА-ЯёЁ0-9]+/).filter((t) => t.length > 2);
+    return memoryCache
+      .map((m) => {
+        const text = String(m.text || '');
+        const low = text.toLowerCase();
+        let score = 0;
+        for (const t of tokens) if (low.includes(t)) score += 2;
+        if (m.updatedAt && m.updatedAt.toMillis) score += Math.min(2, m.updatedAt.toMillis() / 1e15);
+        return { text, score, tags: m.tags || [] };
+      })
+      .filter((x) => x.text.trim())
+      .sort((a, b) => b.score - a.score);
+  }
+
+  function formatMemoryBlock(query) {
+    if (preferences.memoryEnabled === false) return '';
+    if (!memoryCache.length) return '';
+    const ranked = rankMemories(query);
+    const top = (ranked.length ? ranked : memoryCache.map((m) => ({ text: m.text, tags: m.tags })))
+      .slice(0, 12);
+    return top
+      .map((m) => {
+        const tag = Array.isArray(m.tags) && m.tags[0] ? ('[' + m.tags[0] + '] ') : '';
+        return '- ' + tag + String(m.text || '').trim();
+      })
+      .filter(Boolean)
+      .join('\n');
+  }
+
+  async function saveMemoryFacts(facts) {
+    if (!state.user || !state.db || !Array.isArray(facts)) return;
+    const batch = state.db.batch();
+    const col = state.db.collection('users').doc(state.user.uid).collection('memories');
+    const existing = new Set(memoryCache.map((m) => String(m.text || '').toLowerCase()));
+    let n = 0;
+    for (const raw of facts) {
+      const text = String(raw || '').trim().slice(0, 400);
+      if (text.length < 8) continue;
+      if (existing.has(text.toLowerCase())) continue;
+      const ref = col.doc();
+      batch.set(ref, {
+        text,
+        tags: [],
+        source: 'chat',
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
+      existing.add(text.toLowerCase());
+      n++;
+      if (n >= 3) break;
+    }
+    if (n) {
+      try {
+        await batch.commit();
+        await loadUserMemories();
+      } catch (e) {
+        console.warn('memory save', e);
+      }
+    }
+  }
+
+  function extractLocalMemoryCandidates(userText, assistantText) {
+    const facts = [];
+    const u = String(userText || '');
+    const patterns = [
+      /(?:меня зовут|my name is)\s+([^.,!\n]{2,40})/i,
+      /(?:я живу(?: в)?|i live in|i am from|i'm from|я из)\s+([^.,!\n]{2,60})/i,
+      /(?:я предпочитаю|i prefer|мне нравится)\s+([^.,!\n]{2,80})/i,
+      /(?:я работаю|i work (?:as|at|in))\s+([^.,!\n]{2,80})/i,
+      /(?:запомни|remember(?: that)?)\s*[:\-]?\s*([^.,!\n]{4,120})/i,
+      /(?:мой язык|my language is)\s+([^.,!\n]{2,40})/i
+    ];
+    for (const re of patterns) {
+      const m = u.match(re);
+      if (m) facts.push(m[0].trim().slice(0, 200));
+    }
+    // Explicit "запомни:" full sentence
+    const remember = u.match(/(?:запомни|remember)\s*[:\-]\s*(.+)$/i);
+    if (remember) facts.push(remember[1].trim().slice(0, 200));
+    return facts;
+  }
+
+  function buildConversationSummary(messages) {
+    const list = (messages || []).filter((m) => m.role === 'user' || m.role === 'assistant');
+    if (list.length < 10) return '';
+    const older = list.slice(0, -8);
+    const bits = older.slice(-12).map((m) => {
+      const t = String(typeof m.content === 'string' ? m.content : '').replace(/\s+/g, ' ').trim();
+      return (m.role === 'user' ? 'User: ' : 'AI: ') + t.slice(0, 160);
+    });
+    return bits.join('\n').slice(0, 1600);
+  }
+
 
 
   const I18N = {
@@ -166,6 +276,7 @@
     localStorage.setItem('ghost-haptics', String(preferences.haptics));
     localStorage.setItem('ghost-enter-send', String(preferences.enterToSend));
     localStorage.setItem('ghost-animations', String(preferences.animations));
+    localStorage.setItem('chatclaud-memory', String(preferences.memoryEnabled !== false));
     localStorage.setItem('chatclaud-lang', preferences.language || 'en');
     applyI18n();
     applyPreferences();
@@ -568,7 +679,7 @@
       updatedAt: firebase.firestore.FieldValue.serverTimestamp()
     };
     try {
-      await state.db.collection('users').doc(state.user.uid).collection('chats').doc(state.activeChatId).set(payload, { merge: true });
+      await state.db.collection('users').doc(state.user.uid).collection('chats').doc(state.activeChatId).set /* memory-hook */(payload, { merge: true });
       state.chats = [{ id: state.activeChatId, ...payload }, ...state.chats.filter((chat) => chat.id !== state.activeChatId)].slice(0, 30);
       renderHistory();
     } catch (error) {
@@ -641,6 +752,25 @@
     if (requestId !== state.requestSeq || !packet || typeof packet !== 'object') return;
     if (packet.type === 'status') {
       window.ChatClaudAgent.emit('status', packet.label || packet.stage || 'Thinking…');
+    } else if (packet.type === 'memory') {
+      const fact = String(packet.fact || '').trim();
+      const category = String(packet.category || 'other');
+      if (fact) {
+        saveMemoryFacts([fact]).then(() => {}).catch(() => {});
+        // tag category if possible
+        (async () => {
+          if (!state.user || !state.db || preferences.memoryEnabled === false) return;
+          try {
+            await state.db.collection('users').doc(state.user.uid).collection('memories').add({
+              text: fact.slice(0, 400),
+              tags: [category],
+              source: 'agent',
+              updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+            });
+            await loadUserMemories();
+          } catch {}
+        })();
+      }
     } else if (packet.type === 'sources') {
       const items = Array.isArray(packet.items) ? packet.items : [];
       const assistant = state.messages[state.messages.length - 1];
@@ -767,7 +897,12 @@
       const response = await fetch(`${apiBase}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ messages: payloadMessages, language: preferences.language || 'en' }),
+        body: JSON.stringify({
+          messages: payloadMessages,
+          language: preferences.language || 'en',
+          memory: formatMemoryBlock(text),
+          summary: buildConversationSummary(state.messages)
+        }),
         signal: controller.signal
       });
 
@@ -813,6 +948,11 @@
         const assistant = state.messages[state.messages.length - 1];
         if (assistant?.role === 'assistant' && !assistant.error) assistant.content = 'The model returned an empty response. Please try again.';
       }
+      try {
+        const lastUser = [...state.messages].reverse().find((m) => m.role === 'user');
+        const lastAsst = [...state.messages].reverse().find((m) => m.role === 'assistant' && m.content && !m.error);
+        if (lastUser && lastAsst) await saveMemoryFacts(extractLocalMemoryCandidates(lastUser.content, lastAsst.content));
+      } catch {}
       await saveActiveChat();
     } catch (error) {
       if (requestId !== state.requestSeq) return;
@@ -961,6 +1101,8 @@
       await state.auth.setPersistence(firebase.auth.Auth.Persistence.LOCAL);
       state.auth.getRedirectResult().catch(() => {});
       state.auth.onAuthStateChanged(async (user) => {
+      if (user) { try { await loadUserMemories(); } catch {} }
+
         updateAuthUI(user);
         if (user) await loadChats();
         else { state.chats = []; renderHistory(); }
@@ -1006,14 +1148,49 @@
   document.body.appendChild(fileInput);
 
   function renderAttachHint() {
-    if (!attachButton) return;
+    const strip = document.getElementById('attachStrip');
+    if (attachButton) {
+      if (!pendingAttachments.length) {
+        attachButton.title = 'Attach image, PDF, text, or ZIP';
+        attachButton.classList.remove('has-files');
+      } else {
+        attachButton.title = pendingAttachments.map((a) => a.name).join(', ');
+        attachButton.classList.add('has-files');
+      }
+    }
+    if (!strip) return;
     if (!pendingAttachments.length) {
-      attachButton.title = 'Attach image, PDF, text, or ZIP';
-      attachButton.classList.remove('has-files');
+      strip.hidden = true;
+      strip.innerHTML = '';
       return;
     }
-    attachButton.title = pendingAttachments.map((a) => a.name).join(', ');
-    attachButton.classList.add('has-files');
+    strip.hidden = false;
+    const folderSvg = '<svg class="file-icon" viewBox="0 0 24 24" fill="none"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5h3.2l1.6 1.6H18.5A2.5 2.5 0 0 1 21 9.1v7.4a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 16.5v-9z" stroke="#c5d4ea" stroke-width="1.5"/><path d="M3 10h18" stroke="#c5d4ea" stroke-width="1.5"/></svg>';
+    strip.innerHTML = pendingAttachments.map((a, i) => {
+      const name = String(a.name || 'file').replace(/[<>&]/g, '');
+      let body = folderSvg;
+      if (a.kind === 'image' && a.content) {
+        body = '<img src="' + a.content + '" alt=""/>';
+      } else if (a.kind === 'pdf') {
+        body = '<svg class="file-icon" viewBox="0 0 24 24" fill="none"><path d="M7 3h7l5 5v13a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z" stroke="#9cc4ff" stroke-width="1.5"/><path d="M14 3v5h5" stroke="#9cc4ff" stroke-width="1.5"/></svg>';
+      } else if (a.kind === 'zip') {
+        body = folderSvg;
+      }
+      return '<div class="attach-chip" data-i="' + i + '">' + body +
+        '<span class="chip-name">' + name + '</span>' +
+        '<button type="button" class="chip-x" data-remove="' + i + '" aria-label="Remove">×</button></div>';
+    }).join('');
+    strip.querySelectorAll('[data-remove]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const idx = Number(btn.getAttribute('data-remove'));
+        if (!Number.isNaN(idx)) {
+          pendingAttachments.splice(idx, 1);
+          renderAttachHint();
+        }
+      });
+    });
   }
 
   async function readFileAsDataURL(file) {
@@ -1153,6 +1330,18 @@
   };
   els.setEnter.onclick = () => { preferences.enterToSend = !preferences.enterToSend; savePreferences(); };
   els.setAnimations.onclick = () => { preferences.animations = !preferences.animations; savePreferences(); };
+  const memBtn = document.getElementById('setMemory');
+  const memToggle = document.getElementById('toggleMemory');
+  if (memBtn && memToggle) {
+    const syncMem = () => memToggle.classList.toggle('on', preferences.memoryEnabled !== false);
+    syncMem();
+    memBtn.onclick = () => {
+      preferences.memoryEnabled = preferences.memoryEnabled === false;
+      savePreferences();
+      syncMem();
+      toast(preferences.memoryEnabled === false ? 'Memory off' : 'Memory on');
+    };
+  }
   document.getElementById('langGrid')?.addEventListener('click', (event) => {
     const btn = event.target.closest('.lang-btn');
     if (!btn) return;
