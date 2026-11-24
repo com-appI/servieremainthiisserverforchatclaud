@@ -943,10 +943,45 @@ async function runAgentTools(toolCalls, env, signal, send, knownSearchUrls = new
   return { results, sources };
 }
 
+
+function lastUserPlainText(messages) {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m?.role !== "user") continue;
+    if (typeof m.content === "string") return m.content;
+    if (Array.isArray(m.content)) {
+      return m.content.map((p) => (p && p.type === "text" ? p.text : "")).join(" ").trim();
+    }
+  }
+  return "";
+}
+
+/** Tool loop only when the user likely needs research/math/memory write — not pure chat. */
+function shouldUseAgentTools(text) {
+  const t = String(text || "").trim();
+  if (!t) return false;
+  if (t.length > 280) return true;
+  const lower = t.toLowerCase();
+  // pure social / short opinion — answer directly
+  if (t.length < 80 && !/[?/]/.test(t) && !/\d{2,}/.test(t)) {
+    const social = /^(привет|hello|hi|hey|как дела|я\s+\w+|thanks|спасибо|ok|ладно|пока|bye)\b/i;
+    if (social.test(t) || /^я\s+/i.test(t)) return false;
+  }
+  if (/\b(найди|поищи|search|who is|what is|when did|price|новост|курс|weather|погода|docs?|api|latest|сегодня|сейчас)\b/i.test(lower)) return true;
+  if (/\b(запомни|remember)\b/i.test(lower)) return true;
+  if (/[\d]+\s*[\+\-\*\/\^]\s*[\d]+/.test(t)) return true;
+  if (/\b(сколько|how many|calculate|посчит)\b/i.test(lower)) return true;
+  // question marks or long analytic asks
+  if (t.includes("?") && t.length > 40) return true;
+  if (t.length > 120) return true;
+  return false;
+}
+
 function streamChat(request, messages, env, options = {}) {
   const memoryText = typeof options.memory === "string" ? options.memory : "";
   const summaryText = typeof options.summary === "string" ? options.summary : "";
   const coreExtra = { memory: memoryText, summary: summaryText };
+  const hasVision = Boolean(options.hasVision);
 
   const uiLanguage = ["en", "ru", "de", "fr"].includes(options.language) ? options.language : "en";
   const encoder = new TextEncoder();
@@ -995,7 +1030,7 @@ function streamChat(request, messages, env, options = {}) {
           } else {
             agentFailure = pack.diagnostics?.reason || "Serper did not return usable results.";
           }
-        } else {
+        } else if (!hasVision && shouldUseAgentTools(lastUserPlainText(messages))) {
           let totalToolCalls = 0;
           for (let round = 0; round < MAX_AGENT_ROUNDS; round++) {
             if (aborter.signal.aborted) return;
@@ -1029,7 +1064,21 @@ function streamChat(request, messages, env, options = {}) {
               break;
             }
 
-            if (!decision.toolCalls.length) break;
+            if (!decision.toolCalls.length) {
+              if (decision.content && String(decision.content).trim()) {
+                // Fast path: model already answered without tools — stream that text, skip second NVIDIA call.
+                const text = String(decision.content).trim();
+                send({ type: "status", stage: "answer", label: "Writing answer…" });
+                // chunk for smoother UI
+                const step = 48;
+                for (let i = 0; i < text.length; i += step) {
+                  send({ type: "token", text: text.slice(i, i + step) });
+                }
+                send({ type: "done" });
+                return;
+              }
+              break;
+            }
 
             const calls = decision.toolCalls.slice(0, MAX_TOOL_CALLS - totalToolCalls);
             if (calls.length < decision.toolCalls.length) exhaustedToolBudget = true;
@@ -1079,6 +1128,13 @@ function streamChat(request, messages, env, options = {}) {
         if (aborter.signal.aborted) return;
         send({ type: "status", stage: "answer", label: "Writing answer…" });
 
+        if (hasVision) {
+          agentMessages.push({
+            role: "system",
+            content: "The user attached an image. Describe and answer based on what is visible in the image. If the brand/model is unclear, say so honestly."
+          });
+        }
+
         if (webSources.length) {
           agentMessages.push({
             role: "system",
@@ -1105,7 +1161,7 @@ function streamChat(request, messages, env, options = {}) {
             temperature: 1,
             top_p: 0.95,
             max_tokens: 16384,
-            chat_template_kwargs: { enable_thinking: true },
+            chat_template_kwargs: { enable_thinking: false },
             stream: true
           }),
           signal: aborter.signal
@@ -1132,6 +1188,7 @@ function streamChat(request, messages, env, options = {}) {
         let buffer = "";
         let reasoningReported = false;
         let providerFinished = false;
+        let tokensSent = 0;
 
         const parseLine = (line) => {
           if (!line.startsWith("data:")) return;
@@ -1152,7 +1209,16 @@ function streamChat(request, messages, env, options = {}) {
               send({ type: "status", stage: "reasoning", label: "Reasoning…" });
             }
             if (typeof delta?.content === "string" && delta.content) {
+              tokensSent += delta.content.length;
               send({ type: "token", text: delta.content });
+            } else if (
+              !tokensSent &&
+              typeof delta?.reasoning_content === "string" &&
+              delta.reasoning_content &&
+              delta.reasoning_content.length > 0
+            ) {
+              // Some Nemotron builds put visible answer only in reasoning when thinking is on.
+              // We disabled thinking on final stream; this is a safety net.
             }
           } catch {
             // Ignore keepalive and malformed provider frames.
@@ -1173,9 +1239,20 @@ function streamChat(request, messages, env, options = {}) {
         }
         buffer += decoder.decode();
         if (buffer && !providerFinished) parseLine(buffer);
-        if (!cancelled && !aborter.signal.aborted && providerFinished) send({ type: "done" });
-        else if (!cancelled && !aborter.signal.aborted) {
-          sendError("stream_incomplete", "The model stream ended before completion. Please retry.");
+        if (!cancelled && !aborter.signal.aborted && providerFinished) {
+          if (!tokensSent) {
+            send({
+              type: "token",
+              text: "I could not generate a visible reply just now. Please try again."
+            });
+          }
+          send({ type: "done" });
+        } else if (!cancelled && !aborter.signal.aborted) {
+          if (!tokensSent) {
+            sendError("stream_incomplete", "The model stream ended before completion. Please retry.");
+          } else {
+            send({ type: "done" });
+          }
         }
       } catch (error) {
         if (!cancelled && !aborter.signal.aborted) {
@@ -1243,8 +1320,11 @@ async function handleChat(request, env) {
   const language = typeof body.language === "string" ? body.language.slice(0, 8).toLowerCase() : "en";
   const memory = typeof body.memory === "string" ? body.memory.slice(0, 2500) : "";
   const summary = typeof body.summary === "string" ? body.summary.slice(0, 1800) : "";
+  const hasVision = body.hasVision === true || messages.some((m) =>
+    Array.isArray(m.content) && m.content.some((p) => p && p.type === "image_url")
+  );
 
-  return new Response(streamChat(request, messages, env, { forceSearch, language, memory, summary }), {
+  return new Response(streamChat(request, messages, env, { forceSearch, language, memory, summary, hasVision }), {
     headers: {
       "content-type": "text/event-stream; charset=utf-8",
       "cache-control": "no-cache, no-transform",
@@ -1283,7 +1363,7 @@ export default {
         model: MODEL,
         nvidiaConfigured: Boolean(getNvidiaApiKey(env)),
         serperConfigured: Boolean(getSerperApiKey(env)),
-        features: { tools: ["web_search", "open_page"], attachments: ["image", "pdf", "text", "zip"] }
+        features: { tools: ["web_search","open_page","calc","remember"], attachments: ["image", "pdf", "text", "zip"] }
       });
       return withCors(response, request, env);
     }

@@ -549,7 +549,35 @@
       if (message.role === 'user') {
         const bubble = document.createElement('div');
         bubble.className = 'bubble';
-        bubble.textContent = message.content;
+        const atts = Array.isArray(message._attachments) ? message._attachments : [];
+        if (atts.length) {
+          const row = document.createElement('div');
+          row.className = 'msg-atts';
+          for (const a of atts) {
+            if (a.kind === 'image' && a.content) {
+              const img = document.createElement('img');
+              img.className = 'msg-att-img';
+              img.src = a.content;
+              img.alt = a.name || 'image';
+              row.appendChild(img);
+            } else {
+              const chip = document.createElement('div');
+              chip.className = 'msg-att-file';
+              chip.textContent = (a.name || a.kind || 'file').slice(0, 40);
+              row.appendChild(chip);
+            }
+          }
+          bubble.appendChild(row);
+        }
+        const text = typeof message.content === 'string'
+          ? message.content
+          : (message.content != null ? String(message.content) : '');
+        if (text) {
+          const t = document.createElement('div');
+          t.className = 'msg-text';
+          t.textContent = text;
+          bubble.appendChild(t);
+        }
         wrap.appendChild(bubble);
       } else {
         const body = document.createElement('div');
@@ -860,7 +888,8 @@
     state.createdAt = state.createdAt || new Date();
     const userContent = buildUserContent(text, pendingAttachments);
     const displayText = text || pendingAttachments.map((a) => '📎 ' + a.name).join(', ');
-    state.messages.push({ role: 'user', content: typeof userContent === 'string' ? userContent : displayText, _apiContent: userContent, _attachments: pendingAttachments.slice() });
+    const userVisible = (displayText || (typeof userContent === 'string' ? userContent : '') || text || 'Attachment').slice(0, 8000);
+    state.messages.push({ role: 'user', content: userVisible, _apiContent: userContent, _attachments: pendingAttachments.slice() });
     pendingAttachments = [];
     renderAttachHint();
     state.messages = state.messages.slice(-24);
@@ -901,7 +930,8 @@
           messages: payloadMessages,
           language: preferences.language || 'en',
           memory: formatMemoryBlock(text),
-          summary: buildConversationSummary(state.messages)
+          summary: buildConversationSummary(state.messages),
+          hasVision: payloadMessages.some((m) => Array.isArray(m.content) && m.content.some((p) => p && p.type === 'image_url'))
         }),
         signal: controller.signal
       });
@@ -946,7 +976,11 @@
       if (!receivedDone && state.streamText.trim()) window.ChatClaudAgent.emit('done');
       if (!state.streamText.trim()) {
         const assistant = state.messages[state.messages.length - 1];
-        if (assistant?.role === 'assistant' && !assistant.error) assistant.content = 'The model returned an empty response. Please try again.';
+        if (assistant?.role === 'assistant' && !assistant.error) {
+          assistant.content = 'Could not get a reply. Please try again.';
+          assistant.error = true;
+          assistant.retry = true;
+        }
       }
       try {
         const lastUser = [...state.messages].reverse().find((m) => m.role === 'user');
@@ -1193,7 +1227,36 @@
     });
   }
 
-  async function readFileAsDataURL(file) {
+  async function compressImageDataUrl(dataUrl, maxEdge, quality) {
+    return new Promise((resolve) => {
+      try {
+        const img = new Image();
+        img.onload = () => {
+          try {
+            let { width, height } = img;
+            const edge = Math.max(width, height);
+            const scale = edge > maxEdge ? maxEdge / edge : 1;
+            width = Math.max(1, Math.round(width * scale));
+            height = Math.max(1, Math.round(height * scale));
+            const canvas = document.createElement('canvas');
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0, width, height);
+            resolve(canvas.toDataURL('image/jpeg', quality));
+          } catch {
+            resolve(dataUrl);
+          }
+        };
+        img.onerror = () => resolve(dataUrl);
+        img.src = dataUrl;
+      } catch {
+        resolve(dataUrl);
+      }
+    });
+  }
+
+  function readFileAsDataURL(file) {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = () => resolve(String(reader.result || ''));
@@ -1287,7 +1350,8 @@
       try {
         if (type.startsWith('image/') || /\\.(png|jpe?g|gif|webp|bmp)$/i.test(lower)) {
           const dataUrl = await readFileAsDataURL(file);
-          pendingAttachments.push({ name: file.name, kind: 'image', content: dataUrl });
+          const optimized = await compressImageDataUrl(dataUrl, 1280, 0.82);
+          pendingAttachments.push({ name: file.name, kind: 'image', content: optimized || dataUrl });
         } else if (type === 'application/pdf' || lower.endsWith('.pdf')) {
           const text = await extractPdfText(file);
           pendingAttachments.push({ name: file.name, kind: 'pdf', content: text });

@@ -992,3 +992,24 @@ pre.code-block code {
   padding: 0;
   cursor: pointer;
 }
+
+.msg.user .msg-atts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.msg.user .msg-att-img {
+  width: 120px;
+  height: 120px;
+  object-fit: cover;
+  border-radius: 12px;
+  display: block;
+}
+.msg.user .msg-att-file {
+  font-size: 12px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  background: rgba(255,255,255,0.08);
+}
+.msg.user .msg-text { white-space: pre-wrap; word-break: break-word; }
