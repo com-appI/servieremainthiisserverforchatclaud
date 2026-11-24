@@ -745,7 +745,7 @@ async function nvidiaChatOnce(messages, apiKey, signal, { tools = null, stream =
     messages,
     temperature,
     top_p: 0.9,
-    max_tokens: stream ? 2048 : 1024,
+    max_tokens: stream ? 2048 : 2048,
     stream
   };
   if (tools) {
@@ -1158,10 +1158,9 @@ function streamChat(request, messages, env, options = {}) {
           body: JSON.stringify({
             model: MODEL,
             messages: agentMessages,
-            temperature: 1,
+            temperature: 0.7,
             top_p: 0.95,
-            max_tokens: 16384,
-            chat_template_kwargs: { enable_thinking: false },
+            max_tokens: 4096,
             stream: true
           }),
           signal: aborter.signal
@@ -1189,6 +1188,7 @@ function streamChat(request, messages, env, options = {}) {
         let reasoningReported = false;
         let providerFinished = false;
         let tokensSent = 0;
+        let reasoningBuf = "";
 
         const parseLine = (line) => {
           if (!line.startsWith("data:")) return;
@@ -1211,14 +1211,17 @@ function streamChat(request, messages, env, options = {}) {
             if (typeof delta?.content === "string" && delta.content) {
               tokensSent += delta.content.length;
               send({ type: "token", text: delta.content });
-            } else if (
-              !tokensSent &&
-              typeof delta?.reasoning_content === "string" &&
-              delta.reasoning_content &&
-              delta.reasoning_content.length > 0
-            ) {
-              // Some Nemotron builds put visible answer only in reasoning when thinking is on.
-              // We disabled thinking on final stream; this is a safety net.
+            }
+            const reasonBit =
+              (typeof delta?.reasoning_content === "string" && delta.reasoning_content) ||
+              (typeof delta?.reasoning === "string" && delta.reasoning) ||
+              "";
+            if (reasonBit) reasoningBuf += reasonBit;
+            // Some providers put full message in non-delta form
+            const fullMsg = packet.choices?.[0]?.message?.content;
+            if (!tokensSent && typeof fullMsg === "string" && fullMsg) {
+              tokensSent += fullMsg.length;
+              send({ type: "token", text: fullMsg });
             }
           } catch {
             // Ignore keepalive and malformed provider frames.
@@ -1239,20 +1242,56 @@ function streamChat(request, messages, env, options = {}) {
         }
         buffer += decoder.decode();
         if (buffer && !providerFinished) parseLine(buffer);
-        if (!cancelled && !aborter.signal.aborted && providerFinished) {
+        if (!cancelled && !aborter.signal.aborted) {
+          // Fallback 1: model put answer only in reasoning channel
+          if (!tokensSent && reasoningBuf.trim()) {
+            const text = reasoningBuf.trim().slice(0, 12000);
+            const step = 64;
+            for (let i = 0; i < text.length; i += step) {
+              send({ type: "token", text: text.slice(i, i + step) });
+            }
+            tokensSent = text.length;
+          }
+          // Fallback 2: non-stream retry when stream had zero visible tokens
+          if (!tokensSent && !aborter.signal.aborted) {
+            try {
+              send({ type: "status", stage: "answer", label: "Retrying…" });
+              const retryMsgs = agentMessages.map((m) => {
+                // Keep images; strip huge reasoning noise if any
+                return { role: m.role, content: m.content };
+              });
+              const resp = await nvidiaChatOnce(retryMsgs, nvidiaApiKey, aborter.signal, {
+                tools: null,
+                stream: false,
+                temperature: 0.6
+              });
+              if (resp.ok && resp.data) {
+                const msg = resp.data?.choices?.[0]?.message || {};
+                let text = typeof msg.content === "string" ? msg.content : "";
+                if (!text && typeof msg.reasoning_content === "string") text = msg.reasoning_content;
+                if (!text && typeof msg.reasoning === "string") text = msg.reasoning;
+                text = String(text || "").trim();
+                if (text) {
+                  const step = 64;
+                  for (let i = 0; i < text.length; i += step) {
+                    send({ type: "token", text: text.slice(i, i + step) });
+                  }
+                  tokensSent = text.length;
+                }
+              } else {
+                console.warn("Non-stream retry failed", resp.status);
+              }
+            } catch (err) {
+              console.warn("Non-stream retry error", String(err?.message || err).slice(0, 160));
+            }
+          }
           if (!tokensSent) {
             send({
               type: "token",
-              text: "I could not generate a visible reply just now. Please try again."
+              text: "Could not get a reply from the model. Please try again in a moment."
             });
           }
           send({ type: "done" });
-        } else if (!cancelled && !aborter.signal.aborted) {
-          if (!tokensSent) {
-            sendError("stream_incomplete", "The model stream ended before completion. Please retry.");
-          } else {
-            send({ type: "done" });
-          }
         }
       } catch (error) {
         if (!cancelled && !aborter.signal.aborted) {
