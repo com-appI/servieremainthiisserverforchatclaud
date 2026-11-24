@@ -1,4 +1,6 @@
 const MODEL = "nvidia/nemotron-3-ultra-550b-a55b";
+/** Vision-capable model on the same NVIDIA integrate endpoint (Ultra is text-only). */
+const VISION_MODEL = "nvidia/nemotron-3.5-super-vl-120b-a12b";
 const NVIDIA_URL = "https://integrate.api.nvidia.com/v1/chat/completions";
 const FIREBASE_JWKS_URL = "https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com";
 const MAX_BODY = 6 * 1024 * 1024;
@@ -259,6 +261,16 @@ async function rateAllowed(uid, env) {
     }
   }
   return allowed;
+}
+
+function messagesHaveImages(messages) {
+  for (const m of messages || []) {
+    if (!m || !Array.isArray(m.content)) continue;
+    for (const p of m.content) {
+      if (p && p.type === "image_url" && p.image_url && p.image_url.url) return true;
+    }
+  }
+  return false;
 }
 
 function contentToText(content) {
@@ -740,9 +752,17 @@ const AGENT_TOOLS = [
 ];
 
 async function nvidiaChatOnce(messages, apiKey, signal, { tools = null, stream = false, temperature = 0.4 } = {}) {
+  // Tool planning always on text Ultra — strip images so Ultra does not 400.
+  const textOnly = (messages || []).map((m) => {
+    if (!m) return m;
+    if (Array.isArray(m.content)) {
+      return { role: m.role, content: contentToText(m.content) || "[attachment]" };
+    }
+    return { role: m.role, content: m.content };
+  });
   const body = {
     model: MODEL,
-    messages,
+    messages: textOnly,
     temperature,
     top_p: 0.9,
     max_tokens: stream ? 2048 : 2048,
@@ -1040,12 +1060,17 @@ async function completeAnswerOnce(messages, apiKey, signal) {
   while (cleaned.length && cleaned[cleaned.length - 1].role !== "user") cleaned.pop();
   if (!cleaned.length) return { ok: false, status: 0, error: "no_user_message" };
 
+  const useVision = messagesHaveImages(cleaned);
+  // Ultra rejects image_url with 400 "multimodal processing is not enabled".
+  // Documented VL model on the same OpenAI-compatible endpoint:
+  // nvidia/nemotron-3.5-super-vl-120b-a12b
+  const modelId = useVision ? VISION_MODEL : MODEL;
   const body = {
-    model: MODEL,
+    model: modelId,
     messages: cleaned,
     temperature: 0.7,
     top_p: 0.95,
-    max_tokens: 2048,
+    max_tokens: useVision ? 1024 : 2048,
     stream: false
   };
   const response = await fetchWithTimeout(NVIDIA_URL, {
@@ -1056,14 +1081,20 @@ async function completeAnswerOnce(messages, apiKey, signal) {
       accept: "application/json"
     },
     body: JSON.stringify(body)
-  }, signal, 60_000);
+  }, signal, 90_000);
   const raw = await readBoundedBody(response, 256 * 1024, signal, 10000);
   if (!response.ok) {
+    const detail = String(raw || "").slice(0, 500);
+    let error = "nvidia_http_" + response.status;
+    if (/multimodal/i.test(detail) && /not enabled/i.test(detail)) {
+      error = "vision_not_enabled_on_model";
+    }
     return {
       ok: false,
       status: response.status,
-      error: "nvidia_http_" + response.status,
-      detail: String(raw || "").slice(0, 400)
+      error,
+      detail,
+      model: modelId
     };
   }
   let data;
@@ -1256,6 +1287,11 @@ function streamChat(request, messages, env, options = {}) {
             sendError("upstream_auth", "Model authentication failed. Check NVIDIA_API_KEY.");
           } else if (result.error === "empty_content") {
             sendError("empty_content", "Model returned an empty message. Try a shorter question or without the image.");
+          } else if (result.error === "vision_not_enabled_on_model") {
+            sendError(
+              "vision_unsupported",
+              "This text model cannot read images. Vision requests use Nemotron VL; check NVIDIA access to nvidia/nemotron-3.5-super-vl-120b-a12b."
+            );
           } else {
             sendError(
               "upstream_error",
@@ -1379,6 +1415,7 @@ export default {
         assistant: "ASTRION",
         core: "2.0",
         model: MODEL,
+        visionModel: VISION_MODEL,
         nvidiaConfigured: Boolean(getNvidiaApiKey(env)),
         serperConfigured: Boolean(getSerperApiKey(env)),
         features: { tools: ["web_search","open_page","calc","remember"], attachments: ["image", "pdf", "text", "zip"] }
