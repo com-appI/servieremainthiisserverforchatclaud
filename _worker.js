@@ -977,6 +977,110 @@ function shouldUseAgentTools(text) {
   return false;
 }
 
+
+function extractAnyTextFromChoice(data) {
+  const choice = data?.choices?.[0] || {};
+  const msg = choice.message || choice.delta || {};
+  const parts = [
+    msg.content,
+    msg.reasoning_content,
+    msg.reasoning,
+    choice.text,
+    data?.output_text
+  ];
+  for (const p of parts) {
+    if (typeof p === "string" && p.trim()) return p.trim();
+  }
+  // array content parts
+  if (Array.isArray(msg.content)) {
+    const joined = msg.content.map((x) => {
+      if (typeof x === "string") return x;
+      if (x && typeof x.text === "string") return x.text;
+      return "";
+    }).join("").trim();
+    if (joined) return joined;
+  }
+  return "";
+}
+
+async function completeAnswerOnce(messages, apiKey, signal) {
+  // Flatten tool protocol into plain system/user/assistant (Nemotron is unreliable with tool_calls on complete).
+  const cleaned = [];
+  const toolBits = [];
+  for (const m of messages || []) {
+    if (!m || typeof m !== "object") continue;
+    if (m.role === "tool") {
+      toolBits.push(String(m.content || "").slice(0, 6000));
+      continue;
+    }
+    if (m.role === "assistant" && m.tool_calls) {
+      // skip tool-call-only assistant turns
+      if (typeof m.content === "string" && m.content.trim()) {
+        cleaned.push({ role: "assistant", content: m.content });
+      }
+      continue;
+    }
+    if (m.role === "system" || m.role === "user" || m.role === "assistant") {
+      cleaned.push({ role: m.role, content: m.content });
+    }
+  }
+  if (toolBits.length) {
+    // Insert tool evidence before the last user message
+    const evidence = {
+      role: "system",
+      content: "TOOL RESULTS (evidence only):\n" + toolBits.join("\n---\n").slice(0, 14000)
+    };
+    let insertAt = cleaned.length;
+    for (let i = cleaned.length - 1; i >= 0; i--) {
+      if (cleaned[i].role === "user") { insertAt = i; break; }
+    }
+    cleaned.splice(insertAt, 0, evidence);
+  }
+  // Ensure last is user
+  while (cleaned.length && cleaned[cleaned.length - 1].role !== "user") cleaned.pop();
+  if (!cleaned.length) return { ok: false, status: 0, error: "no_user_message" };
+
+  const body = {
+    model: MODEL,
+    messages: cleaned,
+    temperature: 0.7,
+    top_p: 0.95,
+    max_tokens: 2048,
+    stream: false
+  };
+  const response = await fetchWithTimeout(NVIDIA_URL, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: "Bearer " + apiKey,
+      accept: "application/json"
+    },
+    body: JSON.stringify(body)
+  }, signal, 60_000);
+  const raw = await readBoundedBody(response, 256 * 1024, signal, 10000);
+  if (!response.ok) {
+    return {
+      ok: false,
+      status: response.status,
+      error: "nvidia_http_" + response.status,
+      detail: String(raw || "").slice(0, 400)
+    };
+  }
+  let data;
+  try { data = JSON.parse(raw || "{}"); }
+  catch { return { ok: false, status: response.status, error: "bad_json", detail: String(raw || "").slice(0, 200) }; }
+  const text = extractAnyTextFromChoice(data);
+  if (!text) {
+    return {
+      ok: false,
+      status: response.status,
+      error: "empty_content",
+      detail: JSON.stringify(data?.choices?.[0] || data || {}).slice(0, 400)
+    };
+  }
+  return { ok: true, text, data };
+}
+
 function streamChat(request, messages, env, options = {}) {
   const memoryText = typeof options.memory === "string" ? options.memory : "";
   const summaryText = typeof options.summary === "string" ? options.summary : "";
@@ -1131,168 +1235,43 @@ function streamChat(request, messages, env, options = {}) {
         if (hasVision) {
           agentMessages.push({
             role: "system",
-            content: "The user attached an image. Describe and answer based on what is visible in the image. If the brand/model is unclear, say so honestly."
+            content: "The user attached an image. Answer based on what is visible. If unsure, say so."
           });
         }
-
         if (webSources.length) {
           agentMessages.push({
             role: "system",
-            content: "You used live tools. Ground factual claims in the tool results and sources already provided. Do not invent URLs. If evidence is incomplete, say what is uncertain."
-          });
-        }
-        if (agentFailure) {
-          agentMessages.push({
-            role: "system",
-            content: "Tool-loop note: " + String(agentFailure).slice(0, 300)
+            content: "Ground claims in the tool/web material already provided. Do not invent URLs."
           });
         }
 
-        const upstream = await fetch(NVIDIA_URL, {
-          method: "POST",
-          headers: {
-            authorization: `Bearer ${nvidiaApiKey}`,
-            accept: "text/event-stream",
-            "content-type": "application/json"
-          },
-          body: JSON.stringify({
-            model: MODEL,
-            messages: agentMessages,
-            temperature: 0.7,
-            top_p: 0.95,
-            max_tokens: 4096,
-            stream: true
-          }),
-          signal: aborter.signal
-        });
-
-        if (!upstream.ok) {
-          try { await upstream.body?.cancel(); } catch {}
-          console.error("NVIDIA API error status:", upstream.status);
-          if (upstream.status === 429 || upstream.status === 503) {
+        // Primary path: reliable non-stream completion (Nemotron often returns empty content on SSE).
+        const result = await completeAnswerOnce(agentMessages, nvidiaApiKey, aborter.signal);
+        if (aborter.signal.aborted) return;
+        if (!result.ok) {
+          console.error("completeAnswerOnce failed", result.status, result.error, result.detail);
+          if (result.status === 429 || result.status === 503) {
             sendError("busy", "Server is full right now. Please wait and try again in 2.5 minutes.", 150);
-          } else if (upstream.status === 401 || upstream.status === 403) {
-            sendError("upstream_auth", "Authentication with the model provider failed. Check server configuration.");
+          } else if (result.status === 401 || result.status === 403) {
+            sendError("upstream_auth", "Model authentication failed. Check NVIDIA_API_KEY.");
+          } else if (result.error === "empty_content") {
+            sendError("empty_content", "Model returned an empty message. Try a shorter question or without the image.");
           } else {
-            sendError("upstream_error", "The model could not complete the request. Please try again later.");
+            sendError(
+              "upstream_error",
+              "Model error (" + (result.status || "?") + "). " + String(result.detail || result.error || "").slice(0, 180)
+            );
           }
           return;
         }
-        if (!upstream.body) {
-          sendError("empty_stream", "The model returned an empty response.");
-          return;
-        }
 
-        upstreamReader = upstream.body.getReader();
-        let buffer = "";
-        let reasoningReported = false;
-        let providerFinished = false;
-        let tokensSent = 0;
-        let reasoningBuf = "";
-
-        const parseLine = (line) => {
-          if (!line.startsWith("data:")) return;
-          const raw = line.slice(5).trim();
-          if (!raw) return;
-          if (raw === "[DONE]") {
-            providerFinished = true;
-            return;
-          }
-          try {
-            const packet = JSON.parse(raw);
-            const delta = packet.choices?.[0]?.delta;
-            const hasReasoning =
-              (typeof delta?.reasoning_content === "string" && delta.reasoning_content) ||
-              (typeof delta?.reasoning === "string" && delta.reasoning);
-            if (hasReasoning && !reasoningReported) {
-              reasoningReported = true;
-              send({ type: "status", stage: "reasoning", label: "Reasoning…" });
-            }
-            if (typeof delta?.content === "string" && delta.content) {
-              tokensSent += delta.content.length;
-              send({ type: "token", text: delta.content });
-            }
-            const reasonBit =
-              (typeof delta?.reasoning_content === "string" && delta.reasoning_content) ||
-              (typeof delta?.reasoning === "string" && delta.reasoning) ||
-              "";
-            if (reasonBit) reasoningBuf += reasonBit;
-            // Some providers put full message in non-delta form
-            const fullMsg = packet.choices?.[0]?.message?.content;
-            if (!tokensSent && typeof fullMsg === "string" && fullMsg) {
-              tokensSent += fullMsg.length;
-              send({ type: "token", text: fullMsg });
-            }
-          } catch {
-            // Ignore keepalive and malformed provider frames.
-          }
-        };
-
-        while (!cancelled && !aborter.signal.aborted) {
-          const { value, done } = await upstreamReader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split(/\r?\n/);
-          buffer = lines.pop() || "";
-          for (const line of lines) {
-            parseLine(line);
-            if (providerFinished) break;
-          }
-          if (providerFinished) break;
+        const answer = String(result.text || "").trim();
+        const step = 48;
+        for (let i = 0; i < answer.length; i += step) {
+          if (cancelled || aborter.signal.aborted) break;
+          send({ type: "token", text: answer.slice(i, i + step) });
         }
-        buffer += decoder.decode();
-        if (buffer && !providerFinished) parseLine(buffer);
-        if (!cancelled && !aborter.signal.aborted) {
-          // Fallback 1: model put answer only in reasoning channel
-          if (!tokensSent && reasoningBuf.trim()) {
-            const text = reasoningBuf.trim().slice(0, 12000);
-            const step = 64;
-            for (let i = 0; i < text.length; i += step) {
-              send({ type: "token", text: text.slice(i, i + step) });
-            }
-            tokensSent = text.length;
-          }
-          // Fallback 2: non-stream retry when stream had zero visible tokens
-          if (!tokensSent && !aborter.signal.aborted) {
-            try {
-              send({ type: "status", stage: "answer", label: "Retrying…" });
-              const retryMsgs = agentMessages.map((m) => {
-                // Keep images; strip huge reasoning noise if any
-                return { role: m.role, content: m.content };
-              });
-              const resp = await nvidiaChatOnce(retryMsgs, nvidiaApiKey, aborter.signal, {
-                tools: null,
-                stream: false,
-                temperature: 0.6
-              });
-              if (resp.ok && resp.data) {
-                const msg = resp.data?.choices?.[0]?.message || {};
-                let text = typeof msg.content === "string" ? msg.content : "";
-                if (!text && typeof msg.reasoning_content === "string") text = msg.reasoning_content;
-                if (!text && typeof msg.reasoning === "string") text = msg.reasoning;
-                text = String(text || "").trim();
-                if (text) {
-                  const step = 64;
-                  for (let i = 0; i < text.length; i += step) {
-                    send({ type: "token", text: text.slice(i, i + step) });
-                  }
-                  tokensSent = text.length;
-                }
-              } else {
-                console.warn("Non-stream retry failed", resp.status);
-              }
-            } catch (err) {
-              console.warn("Non-stream retry error", String(err?.message || err).slice(0, 160));
-            }
-          }
-          if (!tokensSent) {
-            send({
-              type: "token",
-              text: "Could not get a reply from the model. Please try again in a moment."
-            });
-          }
-          send({ type: "done" });
-        }
+        if (!cancelled && !aborter.signal.aborted) send({ type: "done" });
       } catch (error) {
         if (!cancelled && !aborter.signal.aborted) {
           console.error("Chat stream failed:", String(error?.message || error).slice(0, 160));
