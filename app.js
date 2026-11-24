@@ -38,10 +38,38 @@
     enterToSend: localStorage.getItem('ghost-enter-send') !== 'false',
     animations: localStorage.getItem('ghost-animations') !== 'false',
     language: localStorage.getItem('chatclaud-lang') || 'en',
-    memoryEnabled: localStorage.getItem('chatclaud-memory') !== 'false'
+    memoryEnabled: localStorage.getItem('chatclaud-memory') !== 'false',
+    userName: localStorage.getItem('chatclaud-user-name') || '',
+    userAge: localStorage.getItem('chatclaud-user-age') || ''
   };
   /** @type {{name:string,kind:string,content:any}[]} */
   let pendingAttachments = [];
+  function getMediaCacheList() {
+    try { return JSON.parse(localStorage.getItem('chatclaud-media-cache') || '[]'); }
+    catch { return []; }
+  }
+  function pushMediaCache(entry) {
+    try {
+      const list = getMediaCacheList();
+      list.unshift({ name: entry.name, kind: entry.kind, at: Date.now(), size: String(entry.content || '').length });
+      localStorage.setItem('chatclaud-media-cache', JSON.stringify(list.slice(0, 40)));
+      updateMediaCacheHint();
+    } catch {}
+  }
+  function clearMediaCache() {
+    localStorage.removeItem('chatclaud-media-cache');
+    pendingAttachments = [];
+    try { renderAttachStrip(); } catch {}
+    updateMediaCacheHint();
+    toast('Media cache cleared');
+  }
+  function updateMediaCacheHint() {
+    const el = document.getElementById('mediaCacheHint');
+    if (!el) return;
+    const n = getMediaCacheList().length;
+    el.textContent = n ? (n + ' item' + (n === 1 ? '' : 's')) : 'Empty';
+  }
+
   let memoryCache = [];
 
   async function loadUserMemories() {
@@ -74,18 +102,21 @@
   }
 
   function formatMemoryBlock(query) {
-    if (preferences.memoryEnabled === false) return '';
-    if (!memoryCache.length) return '';
+    const profileLines = [];
+    if (preferences.userName) profileLines.push('- User name: ' + String(preferences.userName).slice(0, 40));
+    if (preferences.userAge) profileLines.push('- User age: ' + String(preferences.userAge).slice(0, 3));
+    if (preferences.memoryEnabled === false) return profileLines.join('\n');
+    if (!memoryCache.length) return profileLines.join('\n');
     const ranked = rankMemories(query);
     const top = (ranked.length ? ranked : memoryCache.map((m) => ({ text: m.text, tags: m.tags })))
       .slice(0, 12);
-    return top
+    const mem = top
       .map((m) => {
         const tag = Array.isArray(m.tags) && m.tags[0] ? ('[' + m.tags[0] + '] ') : '';
         return '- ' + tag + String(m.text || '').trim();
       })
-      .filter(Boolean)
-      .join('\n');
+      .filter(Boolean);
+    return profileLines.concat(mem).join('\n');
   }
 
   async function saveMemoryFacts(facts) {
@@ -262,6 +293,11 @@
   }
 
   function applyPreferences() {
+    const pn = document.getElementById('prefName');
+    const pa = document.getElementById('prefAge');
+    if (pn && pn.value !== preferences.userName) pn.value = preferences.userName || '';
+    if (pa && pa.value !== preferences.userAge) pa.value = preferences.userAge || '';
+    updateMediaCacheHint();
     document.body.classList.toggle('no-animations', !preferences.animations);
     els.toggleHaptic?.classList.toggle('on', preferences.haptics);
     els.toggleEnter?.classList.toggle('on', preferences.enterToSend);
@@ -277,6 +313,8 @@
     localStorage.setItem('ghost-enter-send', String(preferences.enterToSend));
     localStorage.setItem('ghost-animations', String(preferences.animations));
     localStorage.setItem('chatclaud-memory', String(preferences.memoryEnabled !== false));
+    localStorage.setItem('chatclaud-user-name', String(preferences.userName || '').slice(0, 40));
+    localStorage.setItem('chatclaud-user-age', String(preferences.userAge || '').slice(0, 3));
     localStorage.setItem('chatclaud-lang', preferences.language || 'en');
     applyI18n();
     applyPreferences();
@@ -633,7 +671,7 @@
       const el = document.createElement('div');
       el.id = 'agentStatus';
       el.className = 'agent-status';
-      el.innerHTML = '<div class="ghost-mark" aria-hidden="true">' + GHOST_SVG + '</div><div class="agent-label">' + t('thinking') + '</div>';
+      el.innerHTML = '<div class="ball-mark" aria-hidden="true"></div><div class="agent-label">' + t('thinking') + '</div>';
       els.feed.appendChild(el);
       this.el = el;
       this.labelEl = el.querySelector('.agent-label');
@@ -1177,7 +1215,7 @@
   const fileInput = document.createElement('input');
   fileInput.type = 'file';
   fileInput.multiple = true;
-  fileInput.accept = 'image/*,.pdf,.txt,.md,.csv,.json,.zip,application/pdf,application/zip';
+  fileInput.accept = 'image/*,video/*,.pdf,.txt,.md,.csv,.json,.zip,application/pdf,application/zip,video/mp4,video/webm';
   fileInput.style.display = 'none';
   document.body.appendChild(fileInput);
 
@@ -1227,7 +1265,40 @@
     });
   }
 
-  async function compressImageDataUrl(dataUrl, maxEdge, quality) {
+  async function videoFirstFrameDataUrl(file) {
+    return new Promise((resolve) => {
+      try {
+        const url = URL.createObjectURL(file);
+        const video = document.createElement('video');
+        video.preload = 'metadata';
+        video.muted = true;
+        video.playsInline = true;
+        video.src = url;
+        const fail = () => { try { URL.revokeObjectURL(url); } catch {} resolve(null); };
+        video.onerror = fail;
+        video.onloadeddata = async () => {
+          try {
+            video.currentTime = Math.min(0.2, (video.duration || 1) * 0.05);
+          } catch { /* seek may fail */ }
+        };
+        video.onseeked = () => {
+          try {
+            const canvas = document.createElement('canvas');
+            const w = Math.min(1280, video.videoWidth || 640);
+            const h = Math.round((video.videoHeight || 360) * (w / (video.videoWidth || 640)));
+            canvas.width = w; canvas.height = h;
+            canvas.getContext('2d').drawImage(video, 0, 0, w, h);
+            const data = canvas.toDataURL('image/jpeg', 0.82);
+            URL.revokeObjectURL(url);
+            resolve(data);
+          } catch { fail(); }
+        };
+        setTimeout(fail, 8000);
+      } catch { resolve(null); }
+    });
+  }
+
+  function compressImageDataUrl(dataUrl, maxEdge, quality) {
     return new Promise((resolve) => {
       try {
         const img = new Image();
@@ -1325,7 +1396,7 @@
       let extracted = 0;
       for (const name of names) {
         if (extracted >= 5) break;
-        if (!/\\.(txt|md|json|csv|js|ts|html|css|xml|log)$/i.test(name)) continue;
+        if (!/.(txt|md|json|csv|js|ts|html|css|xml|log)$/i.test(name)) continue;
         const entry = zip.files[name];
         if (entry._data && entry._data.uncompressedSize > 120000) continue;
         const text = await entry.async('string');
@@ -1343,15 +1414,35 @@
     for (const file of files) {
       const lower = (file.name || '').toLowerCase();
       const type = file.type || '';
-      if (file.size > 4 * 1024 * 1024) {
-        toast('File too large (max 4MB): ' + file.name);
+      const isVideo = type.startsWith('video/') || /\.(mp4|webm|mov|m4v)$/i.test(lower);
+      const maxBytes = isVideo ? 12 * 1024 * 1024 : 4 * 1024 * 1024;
+      if (file.size > maxBytes) {
+        toast('File too large (max ' + (isVideo ? '12' : '4') + 'MB): ' + file.name);
         continue;
       }
       try {
-        if (type.startsWith('image/') || /\\.(png|jpe?g|gif|webp|bmp)$/i.test(lower)) {
+        if (type.startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp)$/i.test(lower)) {
           const dataUrl = await readFileAsDataURL(file);
           const optimized = await compressImageDataUrl(dataUrl, 1280, 0.82);
           pendingAttachments.push({ name: file.name, kind: 'image', content: optimized || dataUrl });
+          pushMediaCache({ name: file.name, kind: 'image', content: optimized || dataUrl });
+        } else if (type.startsWith('video/') || /\.(mp4|webm|mov|m4v)$/i.test(lower)) {
+          if (file.size > 12 * 1024 * 1024) {
+            toast('Video too large (max 12MB): ' + file.name);
+            continue;
+          }
+          const frame = await videoFirstFrameDataUrl(file);
+          if (frame) {
+            pendingAttachments.push({ name: file.name, kind: 'image', content: frame, _fromVideo: true });
+            pushMediaCache({ name: file.name, kind: 'video-frame', content: frame });
+            toast('Video frame attached');
+          } else {
+            pendingAttachments.push({
+              name: file.name,
+              kind: 'text',
+              content: '[Video attached: ' + file.name + '. Could not extract a frame.]'
+            });
+          }
         } else if (type === 'application/pdf' || lower.endsWith('.pdf')) {
           const text = await extractPdfText(file);
           pendingAttachments.push({ name: file.name, kind: 'pdf', content: text });

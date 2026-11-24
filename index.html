@@ -28,14 +28,10 @@
   <main class="feed" id="feed">
     <div class="empty" id="empty">
       <div>
-        <div class="logo" aria-hidden="true">
-          <svg viewBox="0 0 64 64" fill="none">
-            <path d="M32 6c-11 0-20 9.2-20 22.2V46c0 1.4 1.5 2.3 2.7 1.6L20 44.2l5.2 5.4c.8.8 2 .8 2.8 0L32 45.6l4-4 4 4c.8.8 2 .8 2.8 0l5.2-5.4 5.3 3.4c1.2.7 2.7-.2 2.7-1.6V28.2C56 15.2 47 6 32 6z" fill="#F2F2F4"/>
-            <circle cx="24.5" cy="28" r="3.2" fill="#111"/>
-            <circle cx="39.5" cy="28" r="3.2" fill="#111"/>
-          </svg>
+        <div class="logo logo-img" aria-hidden="true">
+          <img src="/logo-astrion.jpg" alt="ChatClaud" width="88" height="88"/>
         </div>
-        <div class="top-brand"><img class="top-logo" src="/logo-astrion.jpg" alt=""/><h1>ChatClaud</h1></div>
+        <div class="top-brand"><h1>ChatClaud</h1></div>
         <p>Research. Code. Clarity.</p>
       </div>
     </div>
@@ -118,6 +114,24 @@
         </div>
       </div>
       <div class="group">
+        <h2>You</h2>
+        <div class="group">
+          <label class="cell field-cell" for="prefName">
+            <div class="label">Name</div>
+            <input class="inline-input" id="prefName" type="text" maxlength="40" placeholder="Your name" autocomplete="name"/>
+          </label>
+          <label class="cell field-cell" for="prefAge">
+            <div class="label">Age</div>
+            <input class="inline-input" id="prefAge" type="number" min="1" max="120" placeholder="—" inputmode="numeric"/>
+          </label>
+        </div>
+        <h2>Storage</h2>
+        <div class="group">
+          <button class="cell" type="button" id="btnClearMedia">
+            <div class="label">Clear media cache</div>
+            <div class="hint" id="mediaCacheHint">0 items</div>
+          </button>
+        </div>
         <h2 data-i18n="assistant">Assistant</h2>
         <div class="card">
           <button class="cell" type="button"><div class="label" data-i18n="model">Model</div><div class="hint">ASTRION</div><svg class="chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></button>
