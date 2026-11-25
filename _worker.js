@@ -1410,7 +1410,10 @@ function streamChat(request, messages, env, options = {}) {
         if (hasVision) {
           send({ type: "status", stage: "vision", label: "Reading media…" });
           const vision = await runMultimodalExtract(agentMessages, nvidiaApiKey, aborter.signal);
-          if (aborter.signal.aborted) return;
+          if (aborter.signal.aborted) {
+            send({ type: "done" });
+            return;
+          }
           if (vision.ok) {
             agentMessages.push({
               role: "system",
@@ -1428,6 +1431,7 @@ function streamChat(request, messages, env, options = {}) {
             const text = contentToText(m.content);
             return { role: m.role, content: text || "[media attached]" };
           });
+          send({ type: "status", stage: "answer", label: "Writing answer…" });
         }
 
         // MAIN path: text Ultra completion
@@ -1533,9 +1537,17 @@ async function handleChat(request, env) {
   const language = typeof body.language === "string" ? body.language.slice(0, 8).toLowerCase() : "en";
   const memory = typeof body.memory === "string" ? body.memory.slice(0, 2500) : "";
   const summary = typeof body.summary === "string" ? body.summary.slice(0, 1800) : "";
-  const hasVision = body.hasVision === true || messages.some((m) =>
-    Array.isArray(m.content) && m.content.some((p) => p && p.type === "image_url")
-  );
+  let lastUserHasImage = false;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (!m || m.role !== "user") continue;
+    if (Array.isArray(m.content)) {
+      lastUserHasImage = m.content.some((p) => p && p.type === "image_url" && p.image_url && p.image_url.url);
+    }
+    break;
+  }
+  // Source of truth: only the latest user message may trigger MULTIMODAL.
+  const hasVision = lastUserHasImage;
 
   return new Response(streamChat(request, messages, env, { forceSearch, language, memory, summary, hasVision }), {
     headers: {

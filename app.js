@@ -678,21 +678,28 @@
     },
     show(label) {
       const next = String(label || '').trim();
-      if (!next || next === this.lastLabel) return;
+      if (!next) return;
       clearTimeout(this.pendingTimer);
-      const delay = this.lastAt ? Math.max(0, 400 - (Date.now() - this.lastAt)) : 0;
+      const delay = this.lastAt && next !== this.lastLabel ? Math.max(0, 280 - (Date.now() - this.lastAt)) : 0;
       this.pendingTimer = setTimeout(() => {
         if (!state.loading) return;
         this.ensure();
+        if (this.el && !this.el.isConnected) {
+          this.el = null;
+          this.labelEl = null;
+          this.ensure();
+        }
         this.el.classList.add('on');
-        if (this.labelEl.textContent !== next) {
+        if (this.labelEl && this.labelEl.textContent !== next) {
           clearTimeout(this.labelTimer);
           this.labelEl.classList.add('swap');
           this.labelTimer = setTimeout(() => {
             if (!this.labelEl) return;
             this.labelEl.textContent = next;
             this.labelEl.classList.remove('swap');
-          }, 120);
+          }, 100);
+        } else if (this.labelEl) {
+          this.labelEl.textContent = next;
         }
         this.lastLabel = next;
         this.lastAt = Date.now();
@@ -704,8 +711,12 @@
       clearTimeout(this.labelTimer);
       this.pendingTimer = null;
       this.labelTimer = null;
-      if (this.el) this.el.classList.remove('on');
-      this.labelEl?.classList.remove('swap');
+      if (this.el) {
+        this.el.classList.remove('on');
+        try { this.el.remove(); } catch {}
+      }
+      this.el = null;
+      this.labelEl = null;
       this.lastLabel = '';
     },
     reset() { this.hide(); this.lastAt = 0; }
@@ -954,10 +965,24 @@
       const last = state.messages[state.messages.length - 1];
       // last is empty assistant; include previous user with api content via slice above
       // Rebuild: context should end with last user
-      const forApi = state.messages
+      const rawForApi = state.messages
         .filter((m) => m.role === 'user' || (m.role === 'assistant' && m.content && !m.error))
         .slice(-23)
         .map((m) => ({ role: m.role, content: m._apiContent != null ? m._apiContent : m.content }));
+      let lastUserIdx = -1;
+      for (let i = rawForApi.length - 1; i >= 0; i--) {
+        if (rawForApi[i].role === 'user') { lastUserIdx = i; break; }
+      }
+      const forApi = rawForApi.map((m, idx) => {
+        if (m.role !== 'user' || !Array.isArray(m.content)) return m;
+        if (idx === lastUserIdx) return m;
+        const textBits = m.content.map((p) => {
+          if (p && p.type === 'text' && p.text) return p.text;
+          if (p && p.type === 'image_url') return '[earlier image]';
+          return '';
+        }).filter(Boolean);
+        return { role: 'user', content: textBits.join('\n') || '[earlier message]' };
+      });
       // Prefer forApi over contextMessages
       const payloadMessages = forApi.length ? forApi : contextMessages;
       if (contextMessages[0]?.role === 'assistant') contextMessages.shift();
@@ -969,7 +994,16 @@
           language: preferences.language || 'en',
           memory: formatMemoryBlock(text),
           summary: buildConversationSummary(state.messages),
-          hasVision: payloadMessages.some((m) => Array.isArray(m.content) && m.content.some((p) => p && p.type === 'image_url'))
+          hasVision: (function () {
+            for (let i = payloadMessages.length - 1; i >= 0; i--) {
+              const m = payloadMessages[i];
+              if (m && m.role === 'user') {
+                if (!Array.isArray(m.content)) return false;
+                return m.content.some((p) => p && p.type === 'image_url' && p.image_url && p.image_url.url);
+              }
+            }
+            return false;
+          })()
         }),
         signal: controller.signal
       });
@@ -1043,6 +1077,7 @@
     } finally {
       if (requestId === state.requestSeq) {
         window.ChatClaudAgent.emit('done');
+        AgentUI.reset();
         state.controller = null;
         state.streamBody = null;
         setLoading(false);
@@ -1057,6 +1092,7 @@
     if (state.controller) state.controller.abort();
     state.controller = null;
     window.ChatClaudAgent.emit('done');
+    AgentUI.reset();
     const assistant = state.messages[state.messages.length - 1];
     if (assistant?.role === 'assistant' && !assistant.content) assistant.content = 'Generation stopped.';
     setLoading(false);
