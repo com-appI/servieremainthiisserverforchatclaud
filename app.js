@@ -63,11 +63,40 @@
     updateMediaCacheHint();
     toast('Media cache cleared');
   }
+
+  function renderMediaList() {
+    const list = document.getElementById('mediaList');
+    if (!list) return;
+    const items = getMediaCacheList();
+    if (!items.length) {
+      list.innerHTML = '';
+      return;
+    }
+    list.innerHTML = items.slice(0, 20).map((it, i) => {
+      const name = String(it.name || 'file').replace(/[<>&]/g, '');
+      const kind = String(it.kind || 'file');
+      return '<div class="media-item"><span>' + kind + ': ' + name + '</span>' +
+        '<button type="button" data-idx="' + i + '">Delete</button></div>';
+    }).join('');
+    list.querySelectorAll('button[data-idx]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const idx = Number(btn.getAttribute('data-idx'));
+        try {
+          const arr = getMediaCacheList();
+          arr.splice(idx, 1);
+          localStorage.setItem('chatclaud-media-cache', JSON.stringify(arr));
+        } catch {}
+        updateMediaCacheHint();
+        renderMediaList();
+      });
+    });
+  }
   function updateMediaCacheHint() {
     const el = document.getElementById('mediaCacheHint');
     if (!el) return;
     const n = getMediaCacheList().length;
     el.textContent = n ? (n + ' item' + (n === 1 ? '' : 's')) : 'Empty';
+    renderMediaList();
   }
 
   let memoryCache = [];
@@ -574,7 +603,7 @@
   function renderMessages() {
     els.feed.querySelectorAll('.msg, .agent-status').forEach((node) => node.remove());
     if (!state.messages.length) {
-      els.empty.style.display = 'grid';
+      els.empty.style.display = 'flex';
       if (!els.empty.isConnected) els.feed.appendChild(els.empty);
       renderHistory();
       return;
@@ -676,8 +705,9 @@
       this.el = el;
       this.labelEl = el.querySelector('.agent-label');
     },
-    show(label) {
-      const next = String(label || '').trim();
+    show(label, stage) {
+      const next = String(typeof label === 'object' && label ? (label.label || '') : (label || '')).trim();
+      const st = String(stage || (typeof label === 'object' && label ? label.stage : '') || '').trim();
       if (!next) return;
       clearTimeout(this.pendingTimer);
       const delay = this.lastAt && next !== this.lastLabel ? Math.max(0, 280 - (Date.now() - this.lastAt)) : 0;
@@ -690,6 +720,8 @@
           this.ensure();
         }
         this.el.classList.add('on');
+        if (st) this.el.setAttribute('data-stage', st);
+        else this.el.removeAttribute('data-stage');
         if (this.labelEl && this.labelEl.textContent !== next) {
           clearTimeout(this.labelTimer);
           this.labelEl.classList.add('swap');
@@ -727,7 +759,7 @@
   // Public event interface: server events drive the indicator; the UI never guesses a stage.
   window.ChatClaudAgent = {
     emit(type, payload) {
-      if (type === 'status') AgentUI.show(typeof payload === 'string' ? payload : payload?.label);
+      if (type === 'status') AgentUI.show(typeof payload === 'string' ? payload : payload?.label, typeof payload === 'object' ? payload?.stage : '');
       if (type === 'done' || type === 'error') AgentUI.hide();
     }
   };
@@ -828,7 +860,7 @@
   function handlePacket(packet, requestId) {
     if (requestId !== state.requestSeq || !packet || typeof packet !== 'object') return;
     if (packet.type === 'status') {
-      window.ChatClaudAgent.emit('status', packet.label || packet.stage || 'Thinking…');
+      window.ChatClaudAgent.emit('status', { label: packet.label || packet.stage || 'Thinking…', stage: packet.stage || '' });
     } else if (packet.type === 'memory') {
       const fact = String(packet.fact || '').trim();
       const category = String(packet.category || 'other');
@@ -1542,6 +1574,26 @@
     savePreferences();
     toast(t('language') + ': ' + btn.textContent.trim());
   });
+
+
+  // Quick prompt chips on empty state
+  document.getElementById('quickChips')?.addEventListener('click', (e) => {
+    const btn = e.target.closest('.chip');
+    if (!btn) return;
+    const prompt = btn.getAttribute('data-prompt') || '';
+    if (!prompt) return;
+    els.input.value = prompt;
+    autoSize();
+    sendMessage(prompt);
+  });
+
+  // Living ball blink on agent status
+  setInterval(() => {
+    const ball = document.querySelector('.agent-status.on .ball-mark');
+    if (!ball || !state.loading) return;
+    ball.classList.add('blink');
+    setTimeout(() => ball.classList.remove('blink'), 120);
+  }, 3200);
 
   // Authentication and profile dialogs.
   els.authClose.onclick = closeAuth;

@@ -885,7 +885,7 @@ function extractToolCalls(data) {
   };
 }
 
-async function runAgentTools(toolCalls, env, signal, send, knownSearchUrls = new Set()) {
+async function runAgentTools(toolCalls, env, signal, send, knownSearchUrls = new Set(), optionsLang = "en") {
   const sources = [];
   const results = [];
   for (const call of toolCalls.slice(0, 3)) {
@@ -904,7 +904,7 @@ async function runAgentTools(toolCalls, env, signal, send, knownSearchUrls = new
         results.push({ tool_call_id: call.id, role: "tool", name: "web_search", content: JSON.stringify({ ok: false, error: "A search query of at least two characters is required." }) });
         continue;
       }
-      send({ type: "status", stage: "search", label: "Searching the web…" });
+      send({ type: "status", stage: "search", label: statusLabel(optionsLang, "search") });
       const pack = await searchWebProviders(query, env, signal);
       for (const r of pack.results || []) {
         knownSearchUrls.add(r.url);
@@ -928,7 +928,7 @@ async function runAgentTools(toolCalls, env, signal, send, knownSearchUrls = new
     } else if (call.name === "remember") {
       const fact = String(call.args?.fact || "").trim().slice(0, 400);
       const category = String(call.args?.category || "other").slice(0, 32);
-      send({ type: "status", stage: "memory", label: "Saving memory…" });
+      send({ type: "status", stage: "memory", label: statusLabel(optionsLang, "memory") });
       if (fact.length >= 6) {
         send({ type: "memory", fact, category });
         results.push({
@@ -946,18 +946,21 @@ async function runAgentTools(toolCalls, env, signal, send, knownSearchUrls = new
         });
       }
     } else if (call.name === "calc") {
-      const expr = String(call.args?.expression || call.args?.expr || "").trim().slice(0, 200);
-      send({ type: "status", stage: "calc", label: "Calculating…" });
+      const expr = String(call.args?.expression || call.args?.expr || call.args?.equation || "").trim().slice(0, 240);
+      send({ type: "status", stage: "calc", label: statusLabel(optionsLang, "calc") });
       let result;
-      try {
-        if (!/^[\d\s+\-*/().^%eE]+$/.test(expr) || expr.length < 1) throw new Error("invalid");
-        const safe = expr.replace(/\^/g, "**");
-        // eslint-disable-next-line no-new-func
-        const val = Function('"use strict"; return (' + safe + ")")();
-        if (typeof val !== "number" || !Number.isFinite(val)) throw new Error("nan");
-        result = { ok: true, expression: expr, value: val };
-      } catch {
-        result = { ok: false, error: "Could not evaluate expression safely." };
+      // Prefer deterministic algebra solver when equation-like
+      if (/=/.test(expr) || /x/i.test(expr) || /\//.test(expr)) {
+        const sol = solveAlgebraProblem(expr);
+        send({ type: "status", stage: sol.ok ? "verify" : "error", label: statusLabel(optionsLang, sol.ok ? "verify" : "error") });
+        result = { ok: sol.ok, expression: expr, algebra: sol, status: sol.status || "Unverified" };
+      } else {
+        try {
+          const val = evalMathExpression(expr);
+          result = { ok: true, expression: expr, value: val, status: "Verified" };
+        } catch {
+          result = { ok: false, error: "Could not evaluate expression safely.", status: "Unverified" };
+        }
       }
       results.push({
         tool_call_id: call.id,
@@ -975,7 +978,7 @@ async function runAgentTools(toolCalls, env, signal, send, knownSearchUrls = new
         });
         continue;
       }
-      send({ type: "status", stage: "resources", label: "Reading sources…" });
+      send({ type: "status", stage: "resources", label: statusLabel(optionsLang, "resources") });
       try {
         const text = await readWebPage(safeUrl.href, signal, knownSearchUrls);
         if (text) {
@@ -1014,6 +1017,592 @@ async function runAgentTools(toolCalls, env, signal, send, knownSearchUrls = new
 }
 
 
+
+/** Localized activity labels for UI (event-driven, not fake). */
+function statusLabel(lang, key) {
+  const L = {
+    en: {
+      thinking: "Thinking…", analysis: "Analyzing problem…", math: "Mathematical reasoning…",
+      calc: "Computing…", verify: "Verifying result…", alt: "Checking alternatives…",
+      search: "Searching the web…", resources: "Reading sources…", vision: "Reading media…",
+      memory: "Saving memory…", answer: "Writing answer…", error: "Checking errors…", recovery: "Recovering…", complete: "Complete"
+    },
+    ru: {
+      thinking: "Думаю…", analysis: "Анализирую задачу…", math: "Математическое рассуждение…",
+      calc: "Вычисляю…", verify: "Проверяю результат…", alt: "Смотрю альтернативы…",
+      search: "Ищу в интернете…", resources: "Читаю источники…", vision: "Смотрю медиа…",
+      memory: "Сохраняю память…", answer: "Пишу ответ…", error: "Проверяю ошибки…", recovery: "Восстанавливаю…", complete: "Готово"
+    },
+    de: {
+      thinking: "Denke nach…", analysis: "Analysiere Problem…", math: "Mathematisches Reasoning…",
+      calc: "Berechne…", verify: "Prüfe Ergebnis…", alt: "Prüfe Alternativen…",
+      search: "Suche im Web…", resources: "Lese Quellen…", vision: "Lese Medien…",
+      memory: "Speichere…", answer: "Schreibe Antwort…", error: "Prüfe Fehler…", recovery: "Wiederherstellung…", complete: "Fertig"
+    },
+    fr: {
+      thinking: "Réflexion…", analysis: "Analyse du problème…", math: "Raisonnement mathématique…",
+      calc: "Calcul…", verify: "Vérification…", alt: "Alternatives…",
+      search: "Recherche web…", resources: "Lecture des sources…", vision: "Lecture média…",
+      memory: "Mémoire…", answer: "Rédaction…", error: "Contrôle d'erreurs…", recovery: "Récupération…", complete: "Terminé"
+    }
+  };
+  const pack = L[lang] || L.en;
+  return pack[key] || L.en[key] || key;
+}
+
+function isMathQuery(text) {
+  const t = String(text || "");
+  if (!t.trim()) return false;
+  if (/[\d]+\s*[\+\-\*\/\^]\s*[\d]+/.test(t)) return true;
+  if (/[∫∑∏√∞≈≠≤≥±]|\\frac|\\int|\\sum/.test(t)) return true;
+  if (/\b(integral|integrate|derivative|differentiate|limit|equation|prove|theorem|matrix|determinant|factorial|binomial|polynomial|eigen|vector|simplify|expand|factor|solve|уравнен|интеграл|производн|предел|доказа|матриц|упрости|разлож)\b/i.test(t)) return true;
+  return false;
+}
+
+
+
+
+/** ========== ASTRION Algebra Engine v4 (strict, no eval) ========== */
+
+const MATH_EPS_ABS = 1e-10;
+const MATH_EPS_REL = 1e-10;
+
+function nearlyEq(a, b, absEps = MATH_EPS_ABS, relEps = MATH_EPS_REL) {
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return false;
+  const diff = Math.abs(a - b);
+  if (diff <= absEps) return true;
+  const scale = Math.max(Math.abs(a), Math.abs(b), 1e-15);
+  return diff / scale <= relEps;
+}
+
+function gcdInt(a, b) {
+  a = Math.abs(Math.trunc(a));
+  b = Math.abs(Math.trunc(b));
+  while (b) { const t = b; b = a % b; a = t; }
+  return a || 1;
+}
+
+/** Exact rational where possible */
+function rat(n, d = 1) {
+  n = Number(n); d = Number(d);
+  if (!Number.isFinite(n) || !Number.isFinite(d) || d === 0) throw new Error("bad_rat");
+  if (d < 0) { n = -n; d = -d; }
+  // only reduce if near-integers
+  if (Math.abs(n - Math.round(n)) < 1e-12 && Math.abs(d - Math.round(d)) < 1e-12) {
+    n = Math.round(n); d = Math.round(d);
+    const g = gcdInt(n, d);
+    return { n: n / g, d: d / g, v: (n / g) / (d / g) };
+  }
+  return { n, d, v: n / d };
+}
+
+function parseCoefToken(str, defaultOne = true) {
+  const s = String(str || "").trim();
+  if (s === "" || s === "+") return defaultOne ? 1 : 0;
+  if (s === "-") return defaultOne ? -1 : 0;
+  if (/^[+-]?\d+(\.\d+)?$/.test(s)) return Number(s);
+  const frac = s.match(/^([+-]?\d+)\/(\d+)$/);
+  if (frac) {
+    const n = Number(frac[1]);
+    const d = Number(frac[2]);
+    if (!d) throw new Error("div0");
+    return n / d;
+  }
+  throw new Error("bad_coef");
+}
+
+/**
+ * Strict tokenizer: entire string must be consumed.
+ * Rejects unknown characters and empty input.
+ */
+function mathTokenizeStrict(input) {
+  const original = String(input || "");
+  const s = original.replace(/\s+/g, "");
+  if (!s) throw new Error("empty");
+  if (/[^0-9+\-*/^().xXeE.]/i.test(s)) throw new Error("bad_char");
+  const tokens = [];
+  let i = 0;
+  while (i < s.length) {
+    const ch = s[i];
+    if (/[0-9.]/.test(ch)) {
+      let j = i + 1;
+      while (j < s.length && /[0-9.]/.test(s[j])) j++;
+      const num = s.slice(i, j);
+      if (!/^\d+(\.\d+)?$/.test(num)) throw new Error("bad_number");
+      if (num === "." || num.split(".").length > 2) throw new Error("bad_number");
+      tokens.push({ t: "num", v: Number(num) });
+      i = j;
+      continue;
+    }
+    if (ch === "x" || ch === "X") {
+      tokens.push({ t: "var", v: "x" });
+      i++;
+      continue;
+    }
+    if ("+-*/^()".includes(ch)) {
+      tokens.push({ t: "op", v: ch });
+      i++;
+      continue;
+    }
+    throw new Error("bad_char");
+  }
+  if (!tokens.length) throw new Error("empty");
+  return tokens;
+}
+
+function evalRPNStrict(tokens) {
+  const out = [];
+  const ops = [];
+  const prec = { "+": 1, "-": 1, "*": 2, "/": 2, "^": 3, "u-": 4 };
+  const rightAssoc = { "^": true, "u-": true };
+  let prev = null;
+  for (const tok of tokens) {
+    if (tok.t === "num") {
+      out.push(tok.v);
+      prev = "num";
+      continue;
+    }
+    if (tok.t === "var") throw new Error("contains_var");
+    if (tok.t !== "op") throw new Error("bad_token");
+    let op = tok.v;
+    if (op === "-" && (prev === null || prev === "op" || prev === "(")) op = "u-";
+    if (op === "+") {
+      // unary plus: ignore
+      if (prev === null || prev === "op" || prev === "(") continue;
+    }
+    if (op === "(") {
+      ops.push(op);
+      prev = "(";
+      continue;
+    }
+    if (op === ")") {
+      let found = false;
+      while (ops.length) {
+        const top = ops.pop();
+        if (top === "(") { found = true; break; }
+        out.push(top);
+      }
+      if (!found) throw new Error("parens");
+      prev = "num";
+      continue;
+    }
+    while (ops.length && ops[ops.length - 1] !== "(") {
+      const top = ops[ops.length - 1];
+      const pt = prec[top] || 0;
+      const pc = prec[op] || 0;
+      if (pt > pc || (pt === pc && !rightAssoc[op])) out.push(ops.pop());
+      else break;
+    }
+    ops.push(op);
+    prev = "op";
+  }
+  while (ops.length) {
+    const op = ops.pop();
+    if (op === "(" || op === ")") throw new Error("parens");
+    out.push(op);
+  }
+  const st = [];
+  for (const x of out) {
+    if (typeof x === "number") { st.push(x); continue; }
+    if (x === "u-") {
+      if (!st.length) throw new Error("stack");
+      st.push(-st.pop());
+      continue;
+    }
+    if (st.length < 2) throw new Error("stack");
+    const b = st.pop();
+    const a = st.pop();
+    let r;
+    if (x === "+") r = a + b;
+    else if (x === "-") r = a - b;
+    else if (x === "*") r = a * b;
+    else if (x === "/") {
+      if (Math.abs(b) < 1e-15) throw new Error("div0");
+      r = a / b;
+    } else if (x === "^") {
+      if (a === 0 && b < 0) throw new Error("div0");
+      r = Math.pow(a, b);
+    } else throw new Error("op");
+    if (!Number.isFinite(r)) throw new Error("not_finite");
+    st.push(r);
+  }
+  if (st.length !== 1) throw new Error("stack");
+  return st[0];
+}
+
+function evalMathExpression(expr) {
+  const raw = String(expr || "").trim().slice(0, 240);
+  if (!raw) throw new Error("empty");
+  // Full-string strict parse
+  const tokens = mathTokenizeStrict(raw);
+  return evalRPNStrict(tokens);
+}
+
+function validateStep(step) {
+  if (!step || typeof step !== "object") {
+    return { ok: false, status: "Unverified", detail: "missing_step" };
+  }
+  const kind = step.kind || step.step;
+  try {
+    if (kind === "arithmetic_eval") {
+      const v = evalMathExpression(step.expr);
+      const ok = nearlyEq(v, Number(step.value));
+      return { ok, status: ok ? "Verified" : "Refuted", detail: `eval=${v}` };
+    }
+    if (kind === "linear_isolate") {
+      const { A, B, C, rhs } = step;
+      const expect = C - B;
+      const ok = nearlyEq(expect, rhs);
+      return { ok, status: ok ? "Verified" : "Refuted", detail: `C-B=${expect}` };
+    }
+    if (kind === "linear_divide") {
+      const { A, rhs, x } = step;
+      if (Math.abs(A) < 1e-15) return { ok: false, status: "Refuted", detail: "div0_coef" };
+      const expect = rhs / A;
+      const ok = nearlyEq(expect, x);
+      return { ok, status: ok ? "Verified" : "Refuted", detail: `rhs/A=${expect}` };
+    }
+    if (kind === "substitute_linear") {
+      const { A, B, C, x } = step;
+      const val = A * x + B;
+      const ok = nearlyEq(val, C);
+      return { ok, status: ok ? "Verified" : "Refuted", detail: `Ax+B=${val}` };
+    }
+    if (kind === "original_eq_check") {
+      // Evaluate left and right polynomial at x: (aL x^2+bL x+cL) vs (aR x^2+bR x+cR)
+      const { x, left, right } = step;
+      const L = left.a * x * x + left.b * x + left.c;
+      const R = right.a * x * x + right.b * x + right.c;
+      const ok = nearlyEq(L, R, 1e-8, 1e-8);
+      return { ok, status: ok ? "Verified" : "Refuted", detail: `LHS=${L}, RHS=${R}` };
+    }
+    if (kind === "discriminant") {
+      const { a, b, c, D } = step;
+      const expect = b * b - 4 * a * c;
+      const ok = nearlyEq(expect, D, 1e-8, 1e-10);
+      return { ok, status: ok ? "Verified" : "Refuted", detail: `b^2-4ac=${expect}` };
+    }
+    if (kind === "quadratic_root") {
+      const { a, b, c, x } = step;
+      const val = a * x * x + b * x + c;
+      // scale tolerance with coefficient magnitude
+      const scale = Math.max(Math.abs(a), Math.abs(b), Math.abs(c), 1) * (1 + x * x);
+      const ok = Math.abs(val) <= 1e-8 * scale + 1e-10;
+      return { ok, status: ok ? "Verified" : "Refuted", detail: `f(x)=${val}` };
+    }
+    if (kind === "fraction_combine") {
+      const { a, b, c, d, op, num, den } = step;
+      if (!b || !d) return { ok: false, status: "Refuted", detail: "div0" };
+      const left = a * d;
+      const right = c * b;
+      const expectNum = op === "+" ? left + right : left - right;
+      const expectDen = b * d;
+      const g = gcdInt(expectNum, expectDen);
+      const ok = nearlyEq(num, expectNum / g) && nearlyEq(den, expectDen / g);
+      return { ok, status: ok ? "Verified" : "Refuted", detail: `${expectNum}/${expectDen}` };
+    }
+    if (kind === "identity") {
+      return { ok: true, status: "Assumed", detail: "input" };
+    }
+    return { ok: false, status: "Unverified", detail: "unknown_kind" };
+  } catch (e) {
+    return { ok: false, status: "Unverified", detail: String(e.message || e) };
+  }
+}
+
+function pushValidated(steps, step) {
+  const v = validateStep(step);
+  const status = step.forceStatus || v.status;
+  steps.push({
+    step: step.kind || step.step || "step",
+    claim: step.claim || "",
+    status,
+    detail: v.detail,
+    ok: status === "Assumed" || status === "Verified"
+  });
+  return status;
+}
+
+function normalizeEquation(text) {
+  let s = String(text || "").trim();
+  s = s.replace(/²/g, "^2").replace(/·/g, "*").replace(/×/g, "*").replace(/−/g, "-");
+  s = s.replace(/\s+/g, "");
+  s = s.toLowerCase();
+  return s;
+}
+
+/** Parse one side into {a,b,c} for ax^2+bx+c. Strict: only known term forms. */
+function sideCoeffsStrict(side) {
+  if (!side) throw new Error("empty_side");
+  let t = side;
+  if (t[0] !== "+" && t[0] !== "-") t = "+" + t;
+  // Must be composed only of valid terms
+  const cleaned = t.replace(/[+-](?:\d+(?:\.\d+)?(?:\/\d+)?|\d+\/\d+)?x(?:\^2)?|[+-]\d+(?:\.\d+)?(?:\/\d+)?/g, "");
+  if (cleaned !== "") throw new Error("bad_side");
+  const terms = t.match(/[+-](?:\d+(?:\.\d+)?(?:\/\d+)?|\d+\/\d+)?x(?:\^2)?|[+-]\d+(?:\.\d+)?(?:\/\d+)?/g);
+  if (!terms || !terms.length) throw new Error("no_terms");
+  let a = 0, b = 0, c = 0;
+  for (const term of terms) {
+    if (/x\^2/.test(term)) {
+      a += parseCoefToken(term.replace("x^2", ""), true);
+    } else if (/x/.test(term)) {
+      b += parseCoefToken(term.replace("x", ""), true);
+    } else {
+      c += parseCoefToken(term, false);
+    }
+  }
+  if (![a, b, c].every(Number.isFinite)) throw new Error("bad_coef");
+  return { a, b, c };
+}
+
+function equationToPolynomial(eqText) {
+  const s = normalizeEquation(eqText);
+  if (!s.includes("=")) return null;
+  const parts = s.split("=");
+  if (parts.length !== 2) return null;
+  const left = parts[0];
+  const right = parts[1];
+  if (!left || right === "") return null;
+  const L = sideCoeffsStrict(left);
+  const R = sideCoeffsStrict(right);
+  return {
+    a: L.a - R.a,
+    b: L.b - R.b,
+    c: L.c - R.c,
+    left: L,
+    right: R,
+    original: s
+  };
+}
+
+function parseFractionSum(text) {
+  const s = String(text).replace(/\s+/g, "");
+  const m = s.match(/^(-?\d+)\/(-?\d+)([+-])(-?\d+)\/(-?\d+)$/);
+  if (!m) return null;
+  const a = Number(m[1]), b = Number(m[2]), op = m[3], c = Number(m[4]), d = Number(m[5]);
+  const steps = [];
+  if (!b || !d) {
+    steps.push({ step: "fraction", claim: "division by zero in denominator", status: "Refuted", ok: false });
+    return { ok: false, type: "fraction_sum", status: "Refuted", error: "div0", steps };
+  }
+  pushValidated(steps, { kind: "identity", claim: `fractions ${a}/${b} ${op} ${c}/${d}` });
+  const num = op === "+" ? a * d + c * b : a * d - c * b;
+  const den = b * d;
+  const g = gcdInt(num, den);
+  const rn = num / g, rd = den / g;
+  pushValidated(steps, { kind: "fraction_combine", claim: `${rn}/${rd}`, a, b, c, d, op, num: rn, den: rd });
+  const allOk = steps.every((s) => s.status !== "Refuted");
+  return {
+    ok: allOk,
+    type: "fraction_sum",
+    result: { numerator: rn, denominator: rd, decimal: rn / rd },
+    steps,
+    status: allOk ? "Verified" : "Refuted"
+  };
+}
+
+function solveLinearPoly(poly) {
+  const { b, c, left, right, original } = poly;
+  const steps = [];
+  pushValidated(steps, { kind: "identity", claim: `linear form from ${original}` });
+  if (Math.abs(b) < 1e-15) {
+    if (Math.abs(c) < 1e-15) {
+      steps.push({ step: "infinite_solutions", claim: "0=0 for all x", status: "Verified", ok: true });
+      return { ok: true, type: "linear", roots: "all", infinite: true, steps, status: "Verified" };
+    }
+    steps.push({ step: "no_solution", claim: "contradiction 0=nonzero", status: "Verified", ok: true });
+    return { ok: true, type: "linear", roots: [], empty: true, steps, status: "Verified" };
+  }
+  const A = b, B = c;
+  const rhs = -B;
+  pushValidated(steps, { kind: "linear_isolate", claim: `${A}x = ${rhs}`, A, B, C: 0, rhs });
+  const x = rhs / A;
+  pushValidated(steps, { kind: "linear_divide", claim: `x = ${x}`, A, rhs, x });
+  pushValidated(steps, { kind: "substitute_linear", claim: `reduced check`, A, B, C: 0, x });
+  // Original equation check (both sides)
+  if (left && right) {
+    pushValidated(steps, {
+      kind: "original_eq_check",
+      claim: `check original equation at x=${x}`,
+      x, left, right
+    });
+  }
+  const refuted = steps.some((s) => s.status === "Refuted");
+  return { ok: !refuted, type: "linear", roots: [x], steps, status: refuted ? "Refuted" : "Verified" };
+}
+
+function solveQuadraticPoly(poly) {
+  const { a, b, c, left, right, original } = poly;
+  const steps = [];
+  pushValidated(steps, { kind: "identity", claim: `${a}x^2+(${b})x+(${c})=0 from ${original}` });
+  if (Math.abs(a) < 1e-15) return solveLinearPoly(poly);
+
+  const D = b * b - 4 * a * c;
+  pushValidated(steps, { kind: "discriminant", claim: `D=${D}`, a, b, c, D });
+
+  if (D < -1e-12) {
+    steps.push({ step: "roots", claim: "no real roots (D<0)", status: "Verified", ok: true });
+    return { ok: true, type: "quadratic", roots: [], complex: true, discriminant: D, steps, status: "Verified" };
+  }
+
+  const roots = [];
+  if (Math.abs(D) <= 1e-12) {
+    const x = -b / (2 * a);
+    roots.push(x);
+    steps.push({ step: "roots", claim: `repeated root x=${x}`, status: "Assumed", ok: true });
+    pushValidated(steps, { kind: "quadratic_root", claim: `f(${x})≈0 on reduced form`, a, b, c, x });
+    if (left && right) {
+      pushValidated(steps, { kind: "original_eq_check", claim: `original eq at x=${x}`, x, left, right });
+    }
+  } else {
+    const sqrtD = Math.sqrt(D);
+    const x1 = (-b + sqrtD) / (2 * a);
+    const x2 = (-b - sqrtD) / (2 * a);
+    roots.push(x1, x2);
+    steps.push({ step: "roots", claim: `x1=${x1}, x2=${x2}`, status: "Assumed", ok: true });
+    pushValidated(steps, { kind: "quadratic_root", claim: `f(x1)≈0 reduced`, a, b, c, x: x1 });
+    pushValidated(steps, { kind: "quadratic_root", claim: `f(x2)≈0 reduced`, a, b, c, x: x2 });
+    if (left && right) {
+      pushValidated(steps, { kind: "original_eq_check", claim: `original eq at x1`, x: x1, left, right });
+      pushValidated(steps, { kind: "original_eq_check", claim: `original eq at x2`, x: x2, left, right });
+    }
+  }
+
+  const refuted = steps.some((s) => s.status === "Refuted");
+  return {
+    ok: !refuted,
+    type: "quadratic",
+    roots,
+    discriminant: D,
+    steps,
+    status: refuted ? "Refuted" : "Verified",
+    multiple: roots.length === 1
+  };
+}
+
+function solveAlgebraProblem(text) {
+  const raw = String(text || "").trim();
+  if (!raw) return { ok: false, error: "empty", status: "Unverified", steps: [] };
+
+  let body = raw.replace(/^\s*(compute|calculate|solve|посчитай|вычисли|реши|решить|найди)\s+/i, "").trim();
+
+  const frac = parseFractionSum(body);
+  if (frac) return frac;
+
+  // pure arithmetic: must match fully
+  if (/^[\d\s+\-*/().^]+$/.test(body)) {
+    const steps = [];
+    try {
+      const value = evalMathExpression(body);
+      pushValidated(steps, { kind: "identity", claim: body });
+      pushValidated(steps, { kind: "arithmetic_eval", claim: String(value), expr: body, value });
+      const refuted = steps.some((s) => s.status === "Refuted");
+      return {
+        ok: !refuted,
+        type: "arithmetic",
+        result: value,
+        steps,
+        status: refuted ? "Refuted" : "Verified"
+      };
+    } catch (e) {
+      const msg = String(e.message || e);
+      const status = msg === "div0" ? "Refuted" : "Unverified";
+      steps.push({ step: "evaluate", claim: msg, status, ok: false });
+      return { ok: false, type: "arithmetic", error: msg, steps, status };
+    }
+  }
+
+  if (body.includes("=") || /x/i.test(body)) {
+    try {
+      let eq = body;
+      if (!eq.includes("=") && /x/i.test(eq)) eq = eq + "=0";
+      const m = eq.match(/[^=]+=[^=]+/);
+      if (m) eq = m[0];
+      // Reject leftover junk around equation
+      const onlyEq = normalizeEquation(eq);
+      if (/[^0-9x=+\-^./]/.test(onlyEq)) {
+        return {
+          ok: false,
+          error: "bad_char",
+          status: "Unverified",
+          steps: [{ step: "parse", claim: "unsupported characters in equation", status: "Unverified", ok: false }]
+        };
+      }
+      const poly = equationToPolynomial(eq);
+      if (!poly) {
+        return {
+          ok: false,
+          error: "unsupported_form",
+          status: "Unverified",
+          steps: [{ step: "recognize", claim: "Could not parse equation", status: "Unverified", ok: false }]
+        };
+      }
+      const { a, b, c } = poly;
+      if ([a, b, c].some((v) => Math.abs(v) > 1e12)) {
+        return {
+          ok: false,
+          error: "coef_too_large",
+          status: "Unverified",
+          steps: [{ step: "guard", claim: "Coefficients too large", status: "Unverified", ok: false }]
+        };
+      }
+      if (Math.abs(a) > 1e-15) return solveQuadraticPoly(poly);
+      return solveLinearPoly(poly);
+    } catch (e) {
+      return {
+        ok: false,
+        error: String(e.message || e),
+        status: "Unverified",
+        steps: [{ step: "parse", claim: String(e.message || e), status: "Unverified", ok: false }]
+      };
+    }
+  }
+
+  return {
+    ok: false,
+    error: "unsupported_form",
+    status: "Unverified",
+    steps: [{ step: "recognize", claim: "No supported closed-form pattern matched", status: "Unverified", ok: false }]
+  };
+}
+
+function formatAlgebraReport(solution) {
+  if (!solution) return "";
+  const lines = [];
+  lines.push("ASTRION Algebra Engine (deterministic). Statuses are computational, not formal proofs.");
+  lines.push("Overall: " + (solution.status || "Unverified"));
+  if (solution.type) lines.push("Type: " + solution.type);
+  if (solution.steps) {
+    for (const s of solution.steps) {
+      lines.push(`- [${s.status}] ${s.step}: ${s.claim}${s.detail ? " (" + s.detail + ")" : ""}`);
+    }
+  }
+  if (solution.infinite) lines.push("Roots: all real x (identity)");
+  else if (solution.empty) lines.push("Roots: none (contradiction)");
+  else if (solution.roots) lines.push("Roots: " + JSON.stringify(solution.roots));
+  if (solution.result != null) lines.push("Result: " + JSON.stringify(solution.result));
+  if (solution.complex) lines.push("Note: no real roots");
+  if (solution.error) lines.push("Error: " + solution.error);
+  lines.push("Note: Verified = checked by calculation/substitution. Not formal Proven.");
+  return lines.join("\n");
+}
+
+function numericalSpotCheck(expression, claimed) {
+  try {
+    const v = evalMathExpression(expression);
+    const c = Number(String(claimed).replace(",", "."));
+    if (!Number.isFinite(c)) return { ok: false, status: "Unverified", reason: "claimed_not_numeric" };
+    if (nearlyEq(v, c)) return { ok: true, value: v, status: "Verified" };
+    return { ok: false, value: v, claimed: c, status: "Refuted", reason: "mismatch" };
+  } catch (e) {
+    return { ok: false, status: "Unverified", reason: String(e.message || e) };
+  }
+}
+
+// keep aliases used elsewhere
+function mathTokenize(input) { return mathTokenizeStrict(input); }
+function evalRPN(tokens) { return evalRPNStrict(tokens); }
+
 function lastUserPlainText(messages) {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
@@ -1040,7 +1629,8 @@ function shouldUseAgentTools(text) {
   if (/\b(найди|поищи|search|who is|what is|when did|price|новост|курс|weather|погода|docs?|api|latest|сегодня|сейчас)\b/i.test(lower)) return true;
   if (/\b(запомни|remember)\b/i.test(lower)) return true;
   if (/[\d]+\s*[\+\-\*\/\^]\s*[\d]+/.test(t)) return true;
-  if (/\b(сколько|how many|calculate|посчит)\b/i.test(lower)) return true;
+  if (/\b(сколько|how many|calculate|посчит|integral|integrat|derivative|предел|уравнен|доказа|theorem|matrix|solve|упрости|simplify)\b/i.test(lower)) return true;
+  if (isMathQuery(t)) return true;
   // question marks or long analytic asks
   if (t.includes("?") && t.length > 40) return true;
   if (t.length > 120) return true;
@@ -1103,7 +1693,7 @@ async function runMultimodalExtract(messages, apiKey, signal) {
   } else {
     userParts.unshift({
       type: "text",
-      text: "You are ASTRION MULTIMODAL. Extract only what is visible. Be factual and dense. Do not answer as the main assistant; produce a structured visual brief."
+      text: "You are ASTRION MULTIMODAL. Extract only what is visible. Be factual and dense. If the image contains math (equations, graphs, geometry), transcribe formulas carefully in LaTeX when possible and list all given data. Do not solve — only extract. Do not answer as the main assistant."
     });
   }
   const body = {
@@ -1111,7 +1701,7 @@ async function runMultimodalExtract(messages, apiKey, signal) {
     messages: [
       {
         role: "system",
-        content: "You extract visual information for ASTRION MAIN. Output a concise structured brief. No chit-chat."
+        content: "You extract visual information for ASTRION MAIN. Output a concise structured brief. For math images: transcribe every equation, mark unclear symbols. No solving. No chit-chat."
       },
       { role: "user", content: userParts }
     ],
@@ -1255,6 +1845,7 @@ function streamChat(request, messages, env, options = {}) {
   const hasVision = Boolean(options.hasVision);
 
   const uiLanguage = ["en", "ru", "de", "fr"].includes(options.language) ? options.language : "en";
+  const language = uiLanguage;
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
   const aborter = new AbortController();
@@ -1279,7 +1870,7 @@ function streamChat(request, messages, env, options = {}) {
 
       const executionTimeout = setTimeout(() => aborter.abort(), 150_000);
       try {
-        send({ type: "status", stage: "thinking", label: "Thinking…" });
+        send({ type: "status", stage: "thinking", label: statusLabel(language, "thinking") });
         let webSources = [];
         const knownSearchUrls = new Set();
         let agentMessages = withSystemIdentity(messages, "", uiLanguage, coreExtra);
@@ -1288,7 +1879,7 @@ function streamChat(request, messages, env, options = {}) {
 
         if (forceSearch) {
           const userQuery = lastUserText(messages);
-          send({ type: "status", stage: "search", label: "Searching the web…" });
+          send({ type: "status", stage: "search", label: statusLabel(language, "search") });
           const pack = await searchWebProviders(userQuery, env, aborter.signal);
           webSources = pack.results || [];
           for (const item of webSources) knownSearchUrls.add(item.url);
@@ -1339,7 +1930,7 @@ function streamChat(request, messages, env, options = {}) {
               if (decision.content && String(decision.content).trim()) {
                 // Fast path: model already answered without tools — stream that text, skip second NVIDIA call.
                 const text = String(decision.content).trim();
-                send({ type: "status", stage: "answer", label: "Writing answer…" });
+                send({ type: "status", stage: "answer", label: statusLabel(language, "answer") });
                 // chunk for smoother UI
                 const step = 48;
                 for (let i = 0; i < text.length; i += step) {
@@ -1366,7 +1957,7 @@ function streamChat(request, messages, env, options = {}) {
             }
             agentMessages.push(assistantToolMsg);
 
-            const executed = await runAgentTools(calls, env, aborter.signal, send, knownSearchUrls);
+            const executed = await runAgentTools(calls, env, aborter.signal, send, knownSearchUrls, language);
             for (const source of executed.sources) {
               if (!webSources.some((item) => item.url === source.url)) webSources.push(source);
             }
@@ -1397,7 +1988,7 @@ function streamChat(request, messages, env, options = {}) {
         }
 
         if (aborter.signal.aborted) return;
-        send({ type: "status", stage: "answer", label: "Writing answer…" });
+        send({ type: "status", stage: "answer", label: statusLabel(language, "answer") });
 
         if (webSources.length) {
           agentMessages.push({
@@ -1408,7 +1999,7 @@ function streamChat(request, messages, env, options = {}) {
 
         // Dual-AI: MULTIMODAL extracts vision → MAIN answers in text (no image_url on Ultra).
         if (hasVision) {
-          send({ type: "status", stage: "vision", label: "Reading media…" });
+          send({ type: "status", stage: "vision", label: statusLabel(language, "vision") });
           const vision = await runMultimodalExtract(agentMessages, nvidiaApiKey, aborter.signal);
           if (aborter.signal.aborted) {
             send({ type: "done" });
@@ -1431,11 +2022,46 @@ function streamChat(request, messages, env, options = {}) {
             const text = contentToText(m.content);
             return { role: m.role, content: text || "[media attached]" };
           });
-          send({ type: "status", stage: "answer", label: "Writing answer…" });
+          send({ type: "status", stage: "answer", label: statusLabel(language, "answer") });
+        }
+
+        // Math intelligence path: real stages only when query is mathematical
+        const userQ = lastUserPlainText(messages);
+        const mathMode = isMathQuery(userQ);
+        if (mathMode && !hasVision) {
+          send({ type: "status", stage: "analysis", label: statusLabel(language, "analysis") });
+          send({ type: "status", stage: "math", label: statusLabel(language, "math") });
+          const algebraSol = solveAlgebraProblem(userQ);
+          // Status only after engine finishes — never before.
+          if (algebraSol && algebraSol.ok && algebraSol.status === "Verified") {
+            send({ type: "status", stage: "verify", label: statusLabel(language, "verify") });
+            agentMessages.push({ role: "system", content: formatAlgebraReport(algebraSol) });
+          } else if (algebraSol && algebraSol.status === "Refuted") {
+            send({ type: "status", stage: "error", label: statusLabel(language, "error") });
+            agentMessages.push({ role: "system", content: formatAlgebraReport(algebraSol) });
+          } else if (algebraSol) {
+            // Unverified / unsupported: no fake verify
+            agentMessages.push({
+              role: "system",
+              content: formatAlgebraReport(algebraSol) + "\nEngine could not fully verify; reason carefully and mark Unverified where needed."
+            });
+          }
+          agentMessages.push({
+            role: "system",
+            content: (
+              "MATH MODE (ASTRION Mathematical Intelligence):\n" +
+              "- Use the Algebra Engine report above when present; do not contradict Verified substitution checks.\n" +
+              "- Mark claims: Proven (only if truly formal), Verified (calculation/substitution), Assumed, Unverified.\n" +
+              "- Never call a numeric check a formal proof.\n" +
+              "- Show steps clearly. End with: Final answer, Status, Limitations."
+            )
+          });
+          send({ type: "status", stage: "answer", label: statusLabel(language, "answer") });
         }
 
         // MAIN path: text Ultra completion
         const result = await completeAnswerOnce(agentMessages, nvidiaApiKey, aborter.signal);
+
         if (aborter.signal.aborted) return;
         if (!result.ok) {
           console.error("completeAnswerOnce failed", result.status, result.error, result.detail);

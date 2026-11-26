@@ -1066,3 +1066,318 @@ pre.code-block code {
   text-align: right;
 }
 .inline-input:focus { outline: 1px solid rgba(255,255,255,0.2); }
+
+
+/* ===== Premium glass + motion (UI refresh) ===== */
+:root {
+  --glass: rgba(22, 22, 26, 0.72);
+  --glass-border: rgba(255,255,255,0.08);
+  --glass-strong: rgba(28, 28, 34, 0.88);
+  --accent-soft: rgba(255,255,255,0.06);
+  --shadow-soft: 0 8px 32px rgba(0,0,0,0.45);
+}
+
+.empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: min(62vh, 520px);
+  padding: 24px 20px 120px;
+  text-align: center;
+}
+.empty-inner {
+  max-width: 320px;
+  margin: 0 auto;
+  animation: emptyIn 0.7s ease both;
+}
+@keyframes emptyIn {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.empty .logo-img {
+  width: 96px;
+  height: 96px;
+  margin: 0 auto 16px;
+  border-radius: 24px;
+  overflow: hidden;
+  background: #0a0a0c;
+  box-shadow:
+    0 0 0 1px rgba(255,255,255,0.12),
+    0 0 40px rgba(255,255,255,0.08),
+    0 16px 48px rgba(0,0,0,0.55);
+  animation: logoFloat 5s ease-in-out infinite;
+}
+@keyframes logoFloat {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-4px); }
+}
+.empty .logo-img img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.empty h1 {
+  font-size: 28px;
+  font-weight: 650;
+  letter-spacing: -0.03em;
+  margin: 0 0 6px;
+  color: #f4f4f6;
+}
+.empty .tagline {
+  margin: 0 0 22px;
+  font-size: 14px;
+  color: rgba(255,255,255,0.42);
+  letter-spacing: 0.02em;
+}
+.quick-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+}
+.chip {
+  border: 1px solid var(--glass-border);
+  background: var(--glass);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  color: rgba(255,255,255,0.78);
+  font-size: 12.5px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.2s, border-color 0.2s, transform 0.15s;
+}
+.chip:active {
+  transform: scale(0.97);
+  background: rgba(255,255,255,0.1);
+  border-color: rgba(255,255,255,0.16);
+}
+
+/* Composer glass */
+.composer-wrap {
+  padding-bottom: max(10px, env(safe-area-inset-bottom));
+}
+.composer {
+  background: var(--glass-strong) !important;
+  border: 1px solid var(--glass-border) !important;
+  backdrop-filter: blur(22px);
+  -webkit-backdrop-filter: blur(22px);
+  box-shadow: var(--shadow-soft);
+  border-radius: 22px !important;
+}
+.composer textarea {
+  font-size: 16px !important; /* iOS zoom prevent */
+}
+
+/* Attach = living ball */
+.attach-btn {
+  width: 36px !important;
+  height: 36px !important;
+  border-radius: 50% !important;
+  background: transparent !important;
+  padding: 0 !important;
+}
+.attach-ball {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: linear-gradient(160deg, #ffffff 0%, #e8e8ec 55%, #d0d0d6 100%);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.9);
+  position: relative;
+  display: block;
+  margin: auto;
+}
+.attach-ball .ab-eye {
+  position: absolute;
+  top: 10px;
+  width: 5.5px;
+  height: 5.5px;
+  border-radius: 50%;
+  background: #111;
+  transition: transform 0.25s ease;
+}
+.attach-ball .ab-eye.left { left: 6px; }
+.attach-ball .ab-eye.right { right: 6px; }
+.attach-btn:active .attach-ball .ab-eye {
+  transform: scaleY(0.15);
+}
+
+/* Agent living ball */
+.agent-status {
+  display: none;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  margin: 4px 12px 8px;
+  border-radius: 16px;
+  background: var(--glass);
+  border: 1px solid var(--glass-border);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+.agent-status.on {
+  display: flex;
+  animation: agentIn 0.35s ease both;
+}
+@keyframes agentIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.agent-status .ball-mark {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: linear-gradient(160deg, #fff 0%, #ececf0 50%, #d8d8de 100%);
+  box-shadow: 0 3px 12px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.95);
+  position: relative;
+  flex-shrink: 0;
+  animation: ballBreathe 2.4s ease-in-out infinite;
+}
+@keyframes ballBreathe {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.04); }
+}
+.agent-status .ball-mark::before,
+.agent-status .ball-mark::after {
+  content: "";
+  position: absolute;
+  top: 11px;
+  width: 6.5px;
+  height: 6.5px;
+  border-radius: 50%;
+  background: #111;
+  animation: eyeLook 3.6s ease-in-out infinite;
+}
+.agent-status .ball-mark::before { left: 7px; }
+.agent-status .ball-mark::after { right: 7px; animation-delay: 0.08s; }
+@keyframes eyeLook {
+  0%, 20% { transform: translate(0, 0); }
+  30% { transform: translate(2px, -1px); }
+  45% { transform: translate(-2px, 1px); }
+  60% { transform: translate(1px, 1px); }
+  75%, 100% { transform: translate(0, 0); }
+}
+/* blink */
+.agent-status .ball-mark.blink::before,
+.agent-status .ball-mark.blink::after {
+  transform: scaleY(0.12) !important;
+  animation: none;
+}
+.agent-status .agent-label {
+  font-size: 13.5px;
+  color: rgba(255,255,255,0.72);
+  letter-spacing: 0.01em;
+  transition: opacity 0.2s;
+}
+.agent-status .agent-label.swap { opacity: 0.35; }
+
+/* Message fade-in */
+.msg {
+  animation: msgIn 0.45s ease both;
+}
+@keyframes msgIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.msg.bot .body.stream-fade {
+  animation: textReveal 0.6s ease both;
+}
+@keyframes textReveal {
+  from { opacity: 0.15; filter: blur(2px); }
+  to { opacity: 1; filter: blur(0); }
+}
+
+/* Glass side panel */
+.side {
+  background: rgba(12, 12, 16, 0.92) !important;
+  backdrop-filter: blur(28px);
+  -webkit-backdrop-filter: blur(28px);
+  border-right: 1px solid var(--glass-border);
+}
+.side-row {
+  border-radius: 12px;
+  transition: background 0.15s;
+}
+
+/* User bubble glass */
+.msg.user .bubble {
+  background: rgba(255,255,255,0.12) !important;
+  border: 1px solid rgba(255,255,255,0.06);
+  backdrop-filter: blur(8px);
+}
+
+/* Media list in settings */
+.media-list {
+  padding: 4px 0 8px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+.media-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 12px;
+  font-size: 12.5px;
+  color: rgba(255,255,255,0.65);
+  border-top: 1px solid rgba(255,255,255,0.04);
+}
+.media-item button {
+  border: none;
+  background: rgba(255,80,80,0.12);
+  color: #ff8a8a;
+  border-radius: 8px;
+  padding: 4px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .empty-inner, .msg, .agent-status.on, .logo-img, .ball-mark {
+    animation: none !important;
+  }
+}
+
+/* Stage-driven ball moods */
+.agent-status[data-stage="math"] .ball-mark,
+.agent-status[data-stage="analysis"] .ball-mark {
+  animation: ballThink 1.2s ease-in-out infinite;
+}
+.agent-status[data-stage="verify"] .ball-mark,
+.agent-status[data-stage="calc"] .ball-mark {
+  animation: ballCheck 0.9s ease-in-out infinite;
+}
+.agent-status[data-stage="error"] .ball-mark {
+  animation: ballError 0.5s ease-in-out infinite;
+}
+.agent-status[data-stage="search"] .ball-mark,
+.agent-status[data-stage="resources"] .ball-mark {
+  animation: ballScan 1.4s ease-in-out infinite;
+}
+@keyframes ballThink {
+  0%, 100% { transform: rotate(-6deg) scale(1); }
+  50% { transform: rotate(6deg) scale(1.05); }
+}
+@keyframes ballCheck {
+  0%, 100% { transform: scale(1); filter: none; }
+  50% { transform: scale(1.08); filter: brightness(1.08); }
+}
+@keyframes ballError {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-2px); }
+  75% { transform: translateX(2px); }
+}
+@keyframes ballScan {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-3px); }
+}
+
+.agent-status[data-stage="recovery"] .ball-mark {
+  animation: ballScan 1.1s ease-in-out infinite;
+}
+.agent-status[data-stage="complete"] .ball-mark {
+  animation: none;
+  transform: scale(1.06);
+  filter: brightness(1.1);
+}

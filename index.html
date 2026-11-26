@@ -27,12 +27,18 @@
 
   <main class="feed" id="feed">
     <div class="empty" id="empty">
-      <div>
+      <div class="empty-inner">
         <div class="logo logo-img" aria-hidden="true">
-          <img src="/logo-astrion.jpg" alt="ChatClaud" width="88" height="88"/>
+          <img src="/logo-astrion.jpg" alt="ChatClaud" width="96" height="96"/>
         </div>
         <div class="top-brand"><h1>ChatClaud</h1></div>
-        <p>Research. Code. Clarity.</p>
+        <p class="tagline">Research. Code. Clarity.</p>
+        <div class="quick-chips" id="quickChips">
+          <button type="button" class="chip" data-prompt="Solve step by step: integrate x^2 * e^x dx">Math</button>
+          <button type="button" class="chip" data-prompt="Search the latest news about AI agents and summarize key points with sources">Research</button>
+          <button type="button" class="chip" data-prompt="Explain this file or image after I attach it. What should I look for?">Analyze</button>
+          <button type="button" class="chip" data-prompt="Help me structure a project plan with clear steps and risks">Plan</button>
+        </div>
       </div>
     </div>
   </main>
@@ -43,10 +49,9 @@
       <textarea id="input" rows="1" placeholder="Message…" enterkeyhint="send"></textarea>
       <div class="composer-bar">
         <button class="tool attach-btn" id="btnAttach" aria-label="Attach">
-          <span class="attach-orb" aria-hidden="true">
-            <svg viewBox="0 0 24 24" width="16" height="16">
-              <path d="M16.5 6.5v7.2a4.5 4.5 0 0 1-9 0V7.2a2.7 2.7 0 1 1 5.4 0v6.2a.9.9 0 1 1-1.8 0V7.5" fill="none" stroke="#111" stroke-width="1.7" stroke-linecap="round"/>
-            </svg>
+          <span class="attach-ball" aria-hidden="true">
+            <span class="ab-eye left"></span>
+            <span class="ab-eye right"></span>
           </span>
         </button>
         <span class="spacer"></span>
@@ -131,6 +136,7 @@
             <div class="label">Clear media cache</div>
             <div class="hint" id="mediaCacheHint">0 items</div>
           </button>
+          <div class="media-list" id="mediaList"></div>
         </div>
         <h2 data-i18n="assistant">Assistant</h2>
         <div class="card">
