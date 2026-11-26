@@ -1022,28 +1022,76 @@ async function runAgentTools(toolCalls, env, signal, send, knownSearchUrls = new
 function statusLabel(lang, key) {
   const L = {
     en: {
-      thinking: "Thinking…", analysis: "Analyzing problem…", math: "Mathematical reasoning…",
-      calc: "Computing…", verify: "Verifying result…", alt: "Checking alternatives…",
-      search: "Searching the web…", resources: "Reading sources…", vision: "Reading media…",
-      memory: "Saving memory…", answer: "Writing answer…", error: "Checking errors…", recovery: "Recovering…", complete: "Complete"
+      thinking: "Thinking…",
+      analysis: "Reviewing the details…",
+      math: "Working through the math…",
+      calc: "Computing…",
+      verify: "Double-checking…",
+      alt: "Considering alternatives…",
+      search: "Searching the web…",
+      resources: "Reading sources…",
+      vision: "Looking at the media…",
+      memory: "Saving to memory…",
+      answer: "Preparing the answer…",
+      edit: "Editing the answer…",
+      refine: "Refining the details…",
+      error: "Checking for mistakes…",
+      recovery: "Recovering…",
+      complete: "Done"
     },
     ru: {
-      thinking: "Думаю…", analysis: "Анализирую задачу…", math: "Математическое рассуждение…",
-      calc: "Вычисляю…", verify: "Проверяю результат…", alt: "Смотрю альтернативы…",
-      search: "Ищу в интернете…", resources: "Читаю источники…", vision: "Смотрю медиа…",
-      memory: "Сохраняю память…", answer: "Пишу ответ…", error: "Проверяю ошибки…", recovery: "Восстанавливаю…", complete: "Готово"
+      thinking: "Думаю…",
+      analysis: "Уточняю детали…",
+      math: "Решаю математику…",
+      calc: "Вычисляю…",
+      verify: "Перепроверяю…",
+      alt: "Смотрю другие варианты…",
+      search: "Ищу в интернете…",
+      resources: "Читаю источники…",
+      vision: "Смотрю медиа…",
+      memory: "Сохраняю в память…",
+      answer: "Готовлю ответ…",
+      edit: "Редактирую ответ…",
+      refine: "Уточняю формулировку…",
+      error: "Проверяю ошибки…",
+      recovery: "Восстанавливаю…",
+      complete: "Готово"
     },
     de: {
-      thinking: "Denke nach…", analysis: "Analysiere Problem…", math: "Mathematisches Reasoning…",
-      calc: "Berechne…", verify: "Prüfe Ergebnis…", alt: "Prüfe Alternativen…",
-      search: "Suche im Web…", resources: "Lese Quellen…", vision: "Lese Medien…",
-      memory: "Speichere…", answer: "Schreibe Antwort…", error: "Prüfe Fehler…", recovery: "Wiederherstellung…", complete: "Fertig"
+      thinking: "Ich denke nach…",
+      analysis: "Details prüfen…",
+      math: "Mathematik lösen…",
+      calc: "Berechne…",
+      verify: "Nochmals prüfen…",
+      alt: "Alternativen prüfen…",
+      search: "Im Web suchen…",
+      resources: "Quellen lesen…",
+      vision: "Medien ansehen…",
+      memory: "Speichern…",
+      answer: "Antwort vorbereiten…",
+      edit: "Antwort bearbeiten…",
+      refine: "Details verfeinern…",
+      error: "Fehler prüfen…",
+      recovery: "Wiederherstellung…",
+      complete: "Fertig"
     },
     fr: {
-      thinking: "Réflexion…", analysis: "Analyse du problème…", math: "Raisonnement mathématique…",
-      calc: "Calcul…", verify: "Vérification…", alt: "Alternatives…",
-      search: "Recherche web…", resources: "Lecture des sources…", vision: "Lecture média…",
-      memory: "Mémoire…", answer: "Rédaction…", error: "Contrôle d'erreurs…", recovery: "Récupération…", complete: "Terminé"
+      thinking: "Réflexion…",
+      analysis: "Je précise les détails…",
+      math: "Je travaille les maths…",
+      calc: "Calcul…",
+      verify: "Je revérifie…",
+      alt: "Autres options…",
+      search: "Recherche sur le web…",
+      resources: "Lecture des sources…",
+      vision: "Lecture du média…",
+      memory: "Mémoire…",
+      answer: "Je prépare la réponse…",
+      edit: "J'édite la réponse…",
+      refine: "J'affine les détails…",
+      error: "Vérification des erreurs…",
+      recovery: "Récupération…",
+      complete: "Terminé"
     }
   };
   const pack = L[lang] || L.en;
@@ -2056,6 +2104,7 @@ function streamChat(request, messages, env, options = {}) {
               "- Show steps clearly. End with: Final answer, Status, Limitations."
             )
           });
+          send({ type: "status", stage: "refine", label: statusLabel(language, "refine") });
           send({ type: "status", stage: "answer", label: statusLabel(language, "answer") });
         }
 
