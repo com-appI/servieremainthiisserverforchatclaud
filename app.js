@@ -695,6 +695,7 @@
 
   const AgentUI = {
     el: null, labelEl: null, pendingTimer: null, labelTimer: null, lastAt: 0, lastLabel: '',
+    queue: [], pumping: false, minShowMs: 650,
     ensure() {
       if (this.el?.isConnected) return;
       const el = document.createElement('div');
@@ -705,40 +706,58 @@
       this.el = el;
       this.labelEl = el.querySelector('.agent-label');
     },
+    apply(label, stage) {
+      const next = String(label || '').trim();
+      if (!next || !state.loading) return;
+      this.ensure();
+      if (this.el && !this.el.isConnected) {
+        this.el = null;
+        this.labelEl = null;
+        this.ensure();
+      }
+      this.el.classList.add('on');
+      if (stage) this.el.setAttribute('data-stage', stage);
+      else this.el.removeAttribute('data-stage');
+      if (this.labelEl) {
+        this.labelEl.classList.add('swap');
+        clearTimeout(this.labelTimer);
+        this.labelTimer = setTimeout(() => {
+          if (!this.labelEl) return;
+          this.labelEl.textContent = next;
+          this.labelEl.classList.remove('swap');
+        }, 90);
+      }
+      this.lastLabel = next;
+      this.lastAt = Date.now();
+      scrollBottom();
+    },
     show(label, stage) {
       const next = String(typeof label === 'object' && label ? (label.label || '') : (label || '')).trim();
       const st = String(stage || (typeof label === 'object' && label ? label.stage : '') || '').trim();
       if (!next) return;
-      clearTimeout(this.pendingTimer);
-      const delay = this.lastAt && next !== this.lastLabel ? Math.max(0, 280 - (Date.now() - this.lastAt)) : 0;
-      this.pendingTimer = setTimeout(() => {
-        if (!state.loading) return;
-        this.ensure();
-        if (this.el && !this.el.isConnected) {
-          this.el = null;
-          this.labelEl = null;
-          this.ensure();
+      // Queue so intermediate stages (thinking → verify → answer) stay visible
+      this.queue.push({ label: next, stage: st });
+      this.pump();
+    },
+    async pump() {
+      if (this.pumping) return;
+      this.pumping = true;
+      while (this.queue.length && state.loading) {
+        const item = this.queue.shift();
+        // drop duplicates in a row
+        if (item.label === this.lastLabel && item.stage === (this.el?.getAttribute('data-stage') || '')) {
+          continue;
         }
-        this.el.classList.add('on');
-        if (st) this.el.setAttribute('data-stage', st);
-        else this.el.removeAttribute('data-stage');
-        if (this.labelEl && this.labelEl.textContent !== next) {
-          clearTimeout(this.labelTimer);
-          this.labelEl.classList.add('swap');
-          this.labelTimer = setTimeout(() => {
-            if (!this.labelEl) return;
-            this.labelEl.textContent = next;
-            this.labelEl.classList.remove('swap');
-          }, 100);
-        } else if (this.labelEl) {
-          this.labelEl.textContent = next;
-        }
-        this.lastLabel = next;
-        this.lastAt = Date.now();
-        scrollBottom();
-      }, delay);
+        this.apply(item.label, item.stage);
+        await new Promise((r) => setTimeout(r, this.minShowMs));
+      }
+      this.pumping = false;
+      // if more arrived while waiting
+      if (this.queue.length && state.loading) this.pump();
     },
     hide() {
+      this.queue = [];
+      this.pumping = false;
       clearTimeout(this.pendingTimer);
       clearTimeout(this.labelTimer);
       this.pendingTimer = null;
@@ -857,6 +876,25 @@
     sendMessage(retryText);
   }
 
+
+  function stripToolLeak(text) {
+    let s = String(text || '');
+    // raw tool argument dumps
+    s = s.replace(/\{\s*"expression"\s*:\s*"[^"]*"\s*\}/g, '');
+    s = s.replace(/\{\s*"query"\s*:\s*"[^"]*"\s*\}/g, '');
+    s = s.replace(/\{\s*"url"\s*:\s*"[^"]*"\s*\}/g, '');
+    // tool_calls style blobs
+    s = s.replace(/```json[\s\S]*?```/g, (block) => {
+      if (/expression|tool_calls|function/i.test(block)) return '';
+      return block;
+    });
+    s = s.replace(/^\s*\{\s*"[a-z_]+"\s*:[\s\S]*\}\s*$/gim, (line) => {
+      if (/expression|tool_call|name"\s*:\s*"(calc|web_search|open_page|remember)"/i.test(line)) return '';
+      return line;
+    });
+    return s.replace(/\n{3,}/g, '\n\n').trim();
+  }
+
   function handlePacket(packet, requestId) {
     if (requestId !== state.requestSeq || !packet || typeof packet !== 'object') return;
     if (packet.type === 'status') {
@@ -886,12 +924,11 @@
       if (assistant?.role === 'assistant') assistant.sources = items;
       renderSourcesLive(items);
     } else if (packet.type === 'token') {
-      AgentUI.hide();
+      // Keep status visible until done — do not hide on first token
       if (typeof packet.text === 'string' && packet.text) {
-        state.streamText += packet.text;
+        state.streamText = stripToolLeak(state.streamText + packet.text);
         const assistant = state.messages[state.messages.length - 1];
         if (assistant?.role === 'assistant') assistant.content = state.streamText;
-        // Smooth stream: append text, re-format lightly without full re-render lockup
         if (state.streamBody) {
           state.streamBody.textContent = state.streamText;
         }
@@ -899,6 +936,12 @@
       }
     } else if (packet.type === 'done') {
       window.ChatClaudAgent.emit('done');
+      AgentUI.hide();
+      if (state.streamText) {
+        state.streamText = stripToolLeak(state.streamText);
+        const a = state.messages[state.messages.length - 1];
+        if (a?.role === 'assistant') a.content = state.streamText;
+      }
       // Final pretty render (markdown / sources) once, not every token
       const assistant = state.messages[state.messages.length - 1];
       if (assistant?.role === 'assistant' && state.streamBody) {

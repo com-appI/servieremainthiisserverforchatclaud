@@ -1210,9 +1210,9 @@ pre.code-block code {
   gap: 12px;
   padding: 10px 14px;
   margin: 4px 12px 8px;
-  border-radius: 16px;
+  
   background: var(--glass);
-  border: 1px solid var(--glass-border);
+  
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
 }
@@ -1419,14 +1419,14 @@ body {
 
 /* Agent status pill — glass, NO outline */
 .agent-status {
-  border: none !important;
+  
   background: rgba(22, 22, 26, 0.72) !important;
   backdrop-filter: blur(20px) saturate(1.15) !important;
   -webkit-backdrop-filter: blur(20px) saturate(1.15) !important;
   box-shadow:
     0 10px 28px rgba(0,0,0,0.45),
     0 0 0 0.5px rgba(255,255,255,0.05) inset !important;
-  border-radius: 22px !important;
+  
   padding: 12px 16px !important;
 }
 .agent-status.on {
@@ -1522,10 +1522,10 @@ header, .topbar, .app-header {
 #agentStatus.agent-status,
 .agent-status,
 .agent-status.on {
-  border: 0 !important;
-  border-width: 0 !important;
-  border-style: none !important;
-  border-color: transparent !important;
+  
+  
+  
+  
   outline: none !important;
   box-shadow: none !important;
   background: transparent !important;
@@ -1534,7 +1534,7 @@ header, .topbar, .app-header {
   -webkit-backdrop-filter: none !important;
   margin: 6px 16px 10px !important;
   padding: 4px 0 !important;
-  border-radius: 0 !important;
+  
 }
 .agent-status .ball-mark {
   border: 0 !important;
@@ -1547,5 +1547,46 @@ header, .topbar, .app-header {
   -webkit-text-fill-color: rgba(255,255,255,0.72) !important;
   background: none !important;
   color: rgba(255,255,255,0.72) !important;
+  animation: none !important;
+}
+
+
+/* ==== NO CONTOUR on agent status — final override ==== */
+#agentStatus,
+#agentStatus.agent-status,
+#agentStatus.agent-status.on,
+.agent-status,
+.agent-status.on,
+div.agent-status,
+div.agent-status.on {
+  border: none !important;
+  border-width: 0 !important;
+  border-style: none !important;
+  border-color: transparent !important;
+  outline: none !important;
+  box-shadow: none !important;
+  background: transparent !important;
+  background-color: transparent !important;
+  background-image: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  -webkit-appearance: none !important;
+  appearance: none !important;
+  margin: 8px 14px !important;
+  padding: 2px 0 !important;
+  border-radius: 0 !important;
+  ring: none !important;
+}
+#agentStatus .ball-mark,
+.agent-status .ball-mark {
+  border: none !important;
+  outline: none !important;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.35) !important;
+}
+#agentStatus .agent-label,
+.agent-status .agent-label {
+  background: none !important;
+  -webkit-text-fill-color: rgba(255,255,255,0.75) !important;
+  color: rgba(255,255,255,0.75) !important;
   animation: none !important;
 }

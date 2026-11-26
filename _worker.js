@@ -1019,6 +1019,8 @@ async function runAgentTools(toolCalls, env, signal, send, knownSearchUrls = new
 
 
 /** Localized activity labels for UI (event-driven, not fake). */
+function sleepMs(ms) { return new Promise((r) => setTimeout(r, ms)); }
+
 function statusLabel(lang, key) {
   const L = {
     en: {
@@ -1919,6 +1921,7 @@ function streamChat(request, messages, env, options = {}) {
       const executionTimeout = setTimeout(() => aborter.abort(), 150_000);
       try {
         send({ type: "status", stage: "thinking", label: statusLabel(language, "thinking") });
+        await sleepMs(400);
         let webSources = [];
         const knownSearchUrls = new Set();
         let agentMessages = withSystemIdentity(messages, "", uiLanguage, coreExtra);
@@ -2036,6 +2039,8 @@ function streamChat(request, messages, env, options = {}) {
         }
 
         if (aborter.signal.aborted) return;
+        send({ type: "status", stage: "refine", label: statusLabel(language, "refine") });
+        await sleepMs(350);
         send({ type: "status", stage: "answer", label: statusLabel(language, "answer") });
 
         if (webSources.length) {
