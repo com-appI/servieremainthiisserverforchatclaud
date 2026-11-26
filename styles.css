@@ -1516,3 +1516,36 @@ header, .topbar, .app-header {
   box-shadow: 0 10px 30px rgba(0,0,0,0.4) !important;
   border: none !important;
 }
+
+
+/* ===== FORCE: no contour on thinking status (iOS clean) ===== */
+#agentStatus.agent-status,
+.agent-status,
+.agent-status.on {
+  border: 0 !important;
+  border-width: 0 !important;
+  border-style: none !important;
+  border-color: transparent !important;
+  outline: none !important;
+  box-shadow: none !important;
+  background: transparent !important;
+  background-color: transparent !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  margin: 6px 16px 10px !important;
+  padding: 4px 0 !important;
+  border-radius: 0 !important;
+}
+.agent-status .ball-mark {
+  border: 0 !important;
+  outline: none !important;
+  box-shadow:
+    0 4px 16px rgba(0,0,0,0.4),
+    inset 0 1px 0 rgba(255,255,255,0.9) !important;
+}
+.agent-status .agent-label {
+  -webkit-text-fill-color: rgba(255,255,255,0.72) !important;
+  background: none !important;
+  color: rgba(255,255,255,0.72) !important;
+  animation: none !important;
+}
